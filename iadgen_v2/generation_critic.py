@@ -21,6 +21,11 @@ class GenerationCriticScores:
     outside_change_fraction: float
     shell_change_fraction: float
     reject_reasons: list[str]
+    # Salience of the edit inside the mask (magnitude/structure/contrast), so a
+    # low-contrast smudge that satisfies coverage still scores low. Coverage
+    # counts *whether* pixels changed; visibility measures *how visibly*.
+    defect_visibility_score: float = 0.0
+    defect_visibility_magnitude: float = 0.0
 
     @property
     def accepted(self) -> bool:
@@ -67,6 +72,7 @@ def score_generation(
     texture = _texture_preservation_score(generated, background, effective_mask)
     leakage, outside_changed, shell_changed = _leakage_score(generated, background, refined, inpaint, settings)
     morphology_fit = _morphology_fit_score(generated, background, refined, morphology)
+    visibility, visibility_magnitude = _defect_visibility_score(generated, background, refined, settings)
 
     weights = critic_weights(settings)
     score = (
@@ -75,6 +81,7 @@ def score_generation(
         + weights["texture_preservation"] * texture
         + weights["leakage"] * leakage
         + weights["morphology_fit"] * morphology_fit
+        + weights["defect_visibility"] * visibility
     )
     reasons = _reject_reasons(
         alignment,
@@ -82,6 +89,7 @@ def score_generation(
         texture,
         leakage,
         morphology_fit,
+        visibility,
         settings,
         has_reference=has_reference,
         require_reference=require_reference,
@@ -97,17 +105,22 @@ def score_generation(
         outside_change_fraction=float(outside_changed),
         shell_change_fraction=float(shell_changed),
         reject_reasons=reasons,
+        defect_visibility_score=float(visibility),
+        defect_visibility_magnitude=float(visibility_magnitude),
     )
 
 
 def critic_weights(settings: dict[str, Any]) -> dict[str, float]:
     configured = settings.get("weights", {}) if isinstance(settings.get("weights"), dict) else {}
+    # Coverage demoted (it is gameable by low-contrast edits); defect_visibility
+    # added so the objective rewards edits that are actually visible as defects.
     weights = {
         "feature_alignment": float(configured.get("feature_alignment", 0.32)),
-        "mask_coverage": float(configured.get("mask_coverage", 0.22)),
-        "texture_preservation": float(configured.get("texture_preservation", 0.24)),
+        "mask_coverage": float(configured.get("mask_coverage", 0.12)),
+        "texture_preservation": float(configured.get("texture_preservation", 0.22)),
         "leakage": float(configured.get("leakage", 0.14)),
         "morphology_fit": float(configured.get("morphology_fit", 0.08)),
+        "defect_visibility": float(configured.get("defect_visibility", 0.12)),
     }
     total = sum(weights.values())
     return {key: value / total for key, value in weights.items()} if total > 0 else weights
@@ -266,6 +279,7 @@ def _reject_reasons(
     texture: float,
     leakage: float,
     morphology_fit: float,
+    visibility: float,
     settings: dict[str, Any],
     *,
     has_reference: bool,
@@ -285,7 +299,48 @@ def _reject_reasons(
         reasons.append("high_leakage")
     if morphology_fit < float(settings.get("min_morphology_fit_score", 0.20)):
         reasons.append("poor_morphology_fit")
+    # Defaults to 0.0 (off) until a generation re-audit tunes the threshold, so
+    # this term does not silently reject the current corpus. Turn it on via
+    # settings.min_defect_visibility_score to enforce visible defects.
+    if visibility < float(settings.get("min_defect_visibility_score", 0.0)):
+        reasons.append("low_defect_visibility")
     return reasons
+
+
+def _defect_visibility_score(
+    generated: Image.Image,
+    background: Image.Image,
+    refined: np.ndarray,
+    settings: dict[str, Any],
+) -> tuple[float, float]:
+    """How visibly the in-mask edit reads as a defect (not just whether it changed).
+
+    Combines deviation magnitude, added edge/gradient structure, and local
+    contrast against a surrounding normal ring. A low-contrast smudge scores
+    low even at high coverage; a genuine defect scores high.
+    """
+
+    active = refined > 0.05
+    if int(active.sum()) < 8:
+        return 0.0, 0.0
+    gen = np.asarray(generated, dtype=np.float32) / 255.0
+    bg = np.asarray(background, dtype=np.float32) / 255.0
+    gray_gen = _gray(gen)
+    diff = np.abs(gen - bg).mean(axis=2)
+    deviation = float(diff[active].mean())
+    grad_gain = float(np.clip((_gradient_magnitude(gray_gen) - _gradient_magnitude(_gray(bg)))[active], 0.0, None).mean())
+    ring = (_box_blur(active.astype(np.float32), radius=3) > 0.0) & (~active)
+    reference_region = ring if ring.any() else (~active)
+    if reference_region.any():
+        contrast = abs(float(gray_gen[active].mean()) - float(gray_gen[reference_region].mean()))
+    else:
+        contrast = 0.0
+    raw = (
+        float(settings.get("visibility_deviation_gain", 6.0)) * deviation
+        + float(settings.get("visibility_gradient_gain", 3.0)) * grad_gain
+        + float(settings.get("visibility_contrast_gain", 4.0)) * contrast
+    )
+    return float(1.0 - math.exp(-raw)), deviation
 
 
 def _image_diff(a: Image.Image, b: Image.Image) -> np.ndarray:
