@@ -1449,6 +1449,15 @@ def _critic_guided_settings(phase4: dict[str, Any], provider: str) -> dict[str, 
         "min_texture_preservation_score": float(raw.get("min_texture_preservation_score", 0.0)),
         "min_leakage_score": float(raw.get("min_leakage_score", 0.45)),
         "min_morphology_fit_score": float(raw.get("min_morphology_fit_score", 0.0)),
+        # B-S1 visibility controls (default off): threshold gate + controller
+        # retry target + optional critic weights/gains flow to score_generation
+        # and _critic_guided_attempt_settings via this settings dict.
+        "min_defect_visibility_score": float(raw.get("min_defect_visibility_score", 0.0)),
+        "target_defect_visibility": float(raw.get("target_defect_visibility", 0.0)),
+        "weights": raw.get("weights", {}) if isinstance(raw.get("weights"), dict) else {},
+        "visibility_deviation_gain": float(raw.get("visibility_deviation_gain", 6.0)),
+        "visibility_gradient_gain": float(raw.get("visibility_gradient_gain", 3.0)),
+        "visibility_contrast_gain": float(raw.get("visibility_contrast_gain", 4.0)),
         "critic_image_size": int(raw.get("critic_image_size", 160)),
         "change_threshold": float(raw.get("change_threshold", 0.045)),
         "target_mask_coverage": float(raw.get("target_mask_coverage", 0.38)),
