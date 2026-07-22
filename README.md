@@ -96,7 +96,17 @@ auto_masks:
   description_by_target:
     custom_part/scratch: "a thin dark horizontal scratch near the center"
   mask_refinement: auto
+  qwen_localization_cache_enabled: true
 ```
+
+Qwen localization text is cached by image pixels, prompt, model snapshot,
+dtype, Transformers version, and explicit greedy decoding settings. Repeated
+overwrite runs therefore reuse the exact localization response instead of
+allowing a one-pixel or full-region Qwen drift to change every downstream
+candidate. Cache keys, response hashes, and hit status are recorded in each
+row's `settings.qwen_localization.qwen_cache` metadata. Set
+`qwen_localization_cache_refresh: true` only when deliberately establishing a
+new localization result.
 
 `auto-masks` writes paired masks to
 `ground_truth/<defect_type>/<image_stem>_mask.png` so `prepare` and later

@@ -24,7 +24,14 @@ from iadgen_v2.auto_mask.structure import infer_structure_profile_from_measureme
 from iadgen_v2.config import AppConfig, fingerprint
 from iadgen_v2.dataset import IMAGE_EXTENSIONS
 from iadgen_v2.masks import write_mask_overlay, write_pixel_refined_bbox_masks, write_refined_bbox_masks
-from iadgen_v2.qwen_provider import QwenFeatureExtractor, qwen_availability, write_availability
+from iadgen_v2.qwen_provider import (
+    DEFAULT_LOCALIZATION_DECODING,
+    CachedQwenLocalizationExtractor,
+    QwenFeatureExtractor,
+    qwen_availability,
+    resolve_qwen_model_revision,
+    write_availability,
+)
 from iadgen_v2.records import write_json
 
 
@@ -172,14 +179,33 @@ def run_auto_masks(config: AppConfig) -> Path:
         raise RuntimeError(f"Qwen auto-mask provider is not ready: {availability.failure_reason()}")
     pending_metadata_path.write_text("", encoding="utf-8")
 
-    extractor = QwenFeatureExtractor(
-        model_id=str(auto.get("qwen_model", _fallback_qwen(config, "qwen_model", "Qwen/Qwen2.5-VL-3B-Instruct"))),
-        cache_dir=auto.get("qwen_cache_dir", _fallback_qwen(config, "qwen_cache_dir", None)),
+    qwen_model_id = str(auto.get("qwen_model", _fallback_qwen(config, "qwen_model", "Qwen/Qwen2.5-VL-3B-Instruct")))
+    qwen_cache_dir = auto.get("qwen_cache_dir", _fallback_qwen(config, "qwen_cache_dir", None))
+    qwen_dtype = str(auto.get("qwen_dtype", _fallback_qwen(config, "qwen_dtype", "auto")))
+    base_extractor = QwenFeatureExtractor(
+        model_id=qwen_model_id,
+        cache_dir=qwen_cache_dir,
         local_files_only=bool(auto.get("qwen_local_files_only", _fallback_qwen(config, "qwen_local_files_only", True))),
         device=str(auto.get("qwen_device", _fallback_qwen(config, "qwen_device", "auto"))),
-        torch_dtype=str(auto.get("qwen_dtype", _fallback_qwen(config, "qwen_dtype", "auto"))),
+        torch_dtype=qwen_dtype,
         token_count=int(auto.get("token_count", _fallback_qwen(config, "token_count", 16))),
         min_free_gib=float(auto.get("qwen_min_free_gib", _fallback_qwen(config, "qwen_min_free_gib", 30.0))),
+    )
+    localization_cache_value = auto.get("qwen_localization_cache_dir")
+    localization_cache_dir = (
+        Path(str(localization_cache_value))
+        if localization_cache_value
+        else output_dir / "localization_cache"
+    )
+    extractor = CachedQwenLocalizationExtractor(
+        base_extractor,
+        cache_dir=localization_cache_dir,
+        model_id=qwen_model_id,
+        model_revision=resolve_qwen_model_revision(qwen_model_id, qwen_cache_dir),
+        torch_dtype=qwen_dtype,
+        decoding_settings=DEFAULT_LOCALIZATION_DECODING,
+        enabled=bool(auto.get("qwen_localization_cache_enabled", True)),
+        refresh=bool(auto.get("qwen_localization_cache_refresh", False)),
     )
 
     rows: list[AutoMaskRecord] = []
@@ -222,6 +248,10 @@ def run_auto_masks(config: AppConfig) -> Path:
             )
             region, sub_box_selection = _select_qwen_region_from_sub_boxes(region, valid_sub_boxes, image.size, auto)
             localization.update(sub_box_selection)
+            localization["qwen_cache"] = result.get(
+                "localization_cache",
+                {"enabled": False, "cache_hit": False},
+            )
             seed = int(auto.get("mask_seed", 17)) + _stable_seed(f"{category}:{defect_type}:{image_path.name}")
             artifact_stem = f"{category}_{defect_type}_{image_path.stem}"
             if architecture == "generic_evidence":
@@ -8928,6 +8958,7 @@ def normal_guided_qwen_verify_region(
         "candidate_ids_selected": selected_ids,
         "qwen_verifier_fallback_used": fallback_used,
         "qwen_verifier_text": str(result["text"]),
+        "qwen_cache": result.get("localization_cache", {"enabled": False, "cache_hit": False}),
         "candidate_windows": _json_safe(candidates),
         "heatmap_parameters": heat_params,
     }
@@ -10709,7 +10740,14 @@ def _resolve_auto_paths(config: AppConfig, auto: dict[str, Any]) -> None:
         value = auto.get(key)
         if value:
             auto[key] = str(config.resolve_path(value))
-    for key in ("qwen_cache_dir", "dinov2_cache_dir", "delta_deno_cache_dir", "sd15_cache_dir", "selector_model_path"):
+    for key in (
+        "qwen_cache_dir",
+        "qwen_localization_cache_dir",
+        "dinov2_cache_dir",
+        "delta_deno_cache_dir",
+        "sd15_cache_dir",
+        "selector_model_path",
+    ):
         value = auto.get(key)
         if value:
             auto[key] = str(config.resolve_path(value))

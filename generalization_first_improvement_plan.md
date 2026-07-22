@@ -22,7 +22,7 @@ Implemented integrity and compatibility work:
   exactly after cached reselection;
 - legacy official-mask metrics remain bottle Dice `0.7468` and zipper Dice
   `0.6180`;
-- the complete regression suite currently passes: `198 passed`.
+- the complete regression suite currently passes: `201 passed`.
 
 Implemented generic architecture work:
 
@@ -38,6 +38,9 @@ Implemented generic architecture work:
   reliability-weighted logit fusion;
 - Qwen regions are soft priors with `1.0 / 0.5 / 0.2` inside, margin, and
   outside weights;
+- Qwen localization responses use a content-addressed, integrity-checked cache
+  keyed by image pixels, prompt, model revision, dtype, software version, and
+  explicit greedy decoding settings;
 - proposal generation uses fused quantiles, component combinations, and
   anomaly-supported SAM2 prompts;
 - three leave-category-out HistGradientBoosting regressors predict candidate
@@ -57,23 +60,26 @@ Current fixed three-category smoke result:
 
 | Category | Dice | Precision | Recall | Search Recall | Regret |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `metal_nut` | `0.1187` | `0.0657` | `0.6159` | `1.0000` | `0.5367` |
+| `metal_nut` | `0.0010` | `0.0054` | `0.0005` | `0.1390` | `0.0085` |
 | `tile` | `0.5654` | `0.4356` | `0.8055` | `1.0000` | `0.3528` |
 | `wood` | `0.5430` | `0.9993` | `0.3728` | `0.5666` | `0.0000` |
 
-Macro Dice is `0.4090`, worst-category Dice is `0.1187`, accepted coverage is
-`66.67%`, mean search-region recall is `0.8555`, and selector regret is
-`0.2965`. The corrected uncached rigorous smoke run took `644.23` seconds for
-three images. An immediate deterministic-cache replay took `41.13` seconds,
-with every evidence provider reporting a cache hit. Peak process RSS was
-`4.75 GiB` and peak CUDA allocation was `7.91 GiB`. The result is below every
-release gate except individual tile/wood mask quality, so
-`v3-generic-evidence-rc1` has not been frozen.
+Macro Dice is `0.3698`, worst-category Dice is `0.0010`, accepted coverage is
+`33.33%`, mean search-region recall is `0.5685`, and selector regret is
+`0.1204`. The live localization-cache population run took `150.01` seconds for
+three images. Its immediate replay took `16.93` seconds (`8.86x` faster), with
+all three Qwen localizations served from cache. Qwen response hashes, regions,
+selected modes, and final evaluation-mask SHA-256 hashes matched exactly. The
+result is below every release gate except individual tile/wood mask quality,
+so `v3-generic-evidence-rc1` has not been frozen.
 
-The main observed failure is domain shift between simple synthetic corruption
-training and real structural defects. Metal-nut evidence over-segments normal
-product structure, while wood localization remains too narrow. These failures
-must be fixed with generic evidence/selector improvements and full five-category
+The main observed failures are Qwen localization accuracy and domain shift
+between simple synthetic corruption training and real structural defects. The
+new cache removes run-to-run drift but intentionally preserves the first
+content-addressed response; it does not turn a poor box into a good one.
+Metal-nut localization currently misses most of the defect, while wood
+localization remains too narrow. These failures must be fixed with generic
+localization/evidence/selector improvements and full five-category
 leave-one-out validation, not category-name rules.
 
 Sprint 4 architecture comparison, Sprint 5 locked evaluation, and Sprint 6

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import importlib.metadata
 import importlib.util
 import json
 import os
@@ -8,12 +10,19 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 import torch
 from PIL import Image
 
 
 DEFAULT_QWEN_MODEL = "Qwen/Qwen2.5-VL-3B-Instruct"
+LOCALIZATION_CACHE_SCHEMA_VERSION = 1
+DEFAULT_LOCALIZATION_DECODING = {
+    "do_sample": False,
+    "max_new_tokens": 128,
+    "num_beams": 1,
+}
 
 
 @dataclass(frozen=True)
@@ -78,6 +87,7 @@ class QwenFeatureExtractor:
         self.device = _device(device)
         self.token_count = token_count
         self.torch_dtype = _dtype(torch_dtype)
+        self.generation_settings = dict(DEFAULT_LOCALIZATION_DECODING)
         self._processor: Any | None = None
         self._model: Any | None = None
 
@@ -110,7 +120,7 @@ class QwenFeatureExtractor:
             return_tensors="pt",
         ).to(self.device)
         with torch.no_grad():
-            generated_ids = model.generate(**inputs, max_new_tokens=128)
+            generated_ids = model.generate(**inputs, **self.generation_settings)
             generated_text = processor.batch_decode(
                 generated_ids[:, inputs["input_ids"].shape[1] :],
                 skip_special_tokens=True,
@@ -142,6 +152,153 @@ class QwenFeatureExtractor:
         ).to(self.device)
         self._model.eval()
         return self._processor, self._model
+
+
+class CachedQwenLocalizationExtractor:
+    """Content-addressed Qwen text cache for deterministic localization replay."""
+
+    def __init__(
+        self,
+        extractor: QwenFeatureExtractor,
+        *,
+        cache_dir: Path,
+        model_id: str,
+        model_revision: str,
+        torch_dtype: str,
+        decoding_settings: dict[str, Any] | None = None,
+        enabled: bool = True,
+        refresh: bool = False,
+    ) -> None:
+        self.extractor = extractor
+        self.cache_dir = cache_dir
+        self.enabled = enabled
+        self.refresh = refresh
+        self.model_id = model_id
+        self.model_revision = model_revision
+        self.torch_dtype = torch_dtype
+        self.decoding_settings = dict(decoding_settings or DEFAULT_LOCALIZATION_DECODING)
+
+    def analyze(self, image: Image.Image, prompt: str) -> dict[str, Any]:
+        identity = self._identity(image, prompt)
+        cache_key = _json_sha256(identity)
+        cache_path = self.cache_dir / cache_key[:2] / f"{cache_key}.json"
+        invalid_reason: str | None = None
+        if self.enabled and cache_path.exists() and not self.refresh:
+            try:
+                payload = json.loads(cache_path.read_text(encoding="utf-8"))
+                text = _validate_localization_cache_payload(payload, cache_key, identity)
+                return {
+                    "text": text,
+                    "localization_cache": self._metadata(cache_key, cache_path, text=text, cache_hit=True),
+                }
+            except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                invalid_reason = str(exc)
+
+        result = self.extractor.analyze(image, prompt)
+        text = str(result["text"])
+        if self.enabled:
+            payload = {
+                "schema_version": LOCALIZATION_CACHE_SCHEMA_VERSION,
+                "cache_key": cache_key,
+                "identity": identity,
+                "response": {"text": text},
+                "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            }
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = cache_path.with_suffix(f".{os.getpid()}.{uuid4().hex}.tmp")
+            temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            temporary.replace(cache_path)
+        output = dict(result)
+        output["localization_cache"] = self._metadata(
+            cache_key,
+            cache_path,
+            text=text,
+            cache_hit=False,
+            invalid_reason=invalid_reason,
+        )
+        return output
+
+    def close(self) -> None:
+        self.extractor.close()
+
+    def _identity(self, image: Image.Image, prompt: str) -> dict[str, Any]:
+        rgb = image.convert("RGB")
+        image_digest = hashlib.sha256()
+        image_digest.update(f"RGB:{rgb.width}x{rgb.height}:".encode("ascii"))
+        image_digest.update(rgb.tobytes())
+        try:
+            transformers_version = importlib.metadata.version("transformers")
+        except importlib.metadata.PackageNotFoundError:
+            transformers_version = "unavailable"
+        return {
+            "image_sha256": image_digest.hexdigest(),
+            "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "torch_dtype": self.torch_dtype,
+            "transformers_version": transformers_version,
+            "decoding_settings": self.decoding_settings,
+        }
+
+    def _metadata(
+        self,
+        cache_key: str,
+        cache_path: Path,
+        *,
+        text: str,
+        cache_hit: bool,
+        invalid_reason: str | None = None,
+    ) -> dict[str, Any]:
+        metadata = {
+            "enabled": self.enabled,
+            "cache_hit": cache_hit,
+            "cache_key": cache_key,
+            "cache_path": str(cache_path),
+            "response_sha256": hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            "schema_version": LOCALIZATION_CACHE_SCHEMA_VERSION,
+            "model_id": self.model_id,
+            "model_revision": self.model_revision,
+            "torch_dtype": self.torch_dtype,
+            "decoding_settings": self.decoding_settings,
+        }
+        if invalid_reason is not None:
+            metadata["invalid_reason"] = invalid_reason
+        return metadata
+
+
+def resolve_qwen_model_revision(model_id: str, cache_dir: str | Path | None) -> str:
+    root = Path(cache_dir or os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface")).expanduser()
+    hub = root / "hub" if root.name != "hub" else root
+    model_dir = hub / f"models--{model_id.replace('/', '--')}"
+    main_ref = model_dir / "refs" / "main"
+    if main_ref.exists():
+        revision = main_ref.read_text(encoding="utf-8").strip()
+        if revision:
+            return revision
+    snapshots = sorted(path.name for path in (model_dir / "snapshots").glob("*") if path.is_dir())
+    return snapshots[-1] if snapshots else "unresolved"
+
+
+def _validate_localization_cache_payload(payload: object, cache_key: str, identity: dict[str, Any]) -> str:
+    if not isinstance(payload, dict):
+        raise ValueError("Qwen localization cache payload must be an object")
+    if int(payload.get("schema_version", -1)) != LOCALIZATION_CACHE_SCHEMA_VERSION:
+        raise ValueError("Qwen localization cache schema mismatch")
+    if str(payload.get("cache_key", "")) != cache_key or payload.get("identity") != identity:
+        raise ValueError("Qwen localization cache identity mismatch")
+    response = payload.get("response")
+    if not isinstance(response, dict) or not isinstance(response.get("text"), str):
+        raise ValueError("Qwen localization cache response is missing text")
+    text = str(response["text"])
+    expected = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if str(payload.get("response_sha256", "")) != expected:
+        raise ValueError("Qwen localization cache response hash mismatch")
+    return text
+
+
+def _json_sha256(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def qwen_availability(

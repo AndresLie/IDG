@@ -41,7 +41,7 @@ from iadgen_v2.auto_masks import (
 from iadgen_v2.config import load_config
 from iadgen_v2.dataset import prepare_splits
 from iadgen_v2.masks import write_refined_bbox_masks
-from iadgen_v2.qwen_provider import QwenAvailability
+from iadgen_v2.qwen_provider import CachedQwenLocalizationExtractor, QwenAvailability
 
 
 def test_parse_qwen_bbox_payload_accepts_json_and_rejects_malformed() -> None:
@@ -85,6 +85,88 @@ def test_parse_qwen_bbox_payload_preserves_sub_boxes() -> None:
 
     assert parsed["bbox_xyxy"] == (10, 10, 90, 90)
     assert parsed["sub_boxes_xyxy"] == [(12, 20, 40, 30), (50, 60, 80, 70)]
+
+
+def test_qwen_localization_cache_replays_and_invalidates_inputs(tmp_path: Path) -> None:
+    class CountingExtractor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def analyze(self, image: Image.Image, prompt: str) -> dict[str, object]:
+            self.calls += 1
+            return {"text": f"response-{self.calls}-{image.getpixel((0, 0))}-{prompt}"}
+
+        def close(self) -> None:
+            pass
+
+    delegate = CountingExtractor()
+    cached = CachedQwenLocalizationExtractor(
+        delegate,  # type: ignore[arg-type]
+        cache_dir=tmp_path / "cache",
+        model_id="test/model",
+        model_revision="revision-a",
+        torch_dtype="float16",
+    )
+    image = Image.new("RGB", (8, 8), (10, 20, 30))
+
+    first = cached.analyze(image, "locate defect")
+    replay = cached.analyze(image, "locate defect")
+    changed_prompt = cached.analyze(image, "locate anomaly")
+    changed_image = image.copy()
+    changed_image.putpixel((0, 0), (11, 20, 30))
+    cached.analyze(changed_image, "locate defect")
+
+    assert delegate.calls == 3
+    assert replay["text"] == first["text"]
+    assert first["localization_cache"]["cache_hit"] is False
+    assert replay["localization_cache"]["cache_hit"] is True
+    assert replay["localization_cache"]["response_sha256"] == first["localization_cache"]["response_sha256"]
+    assert changed_prompt["localization_cache"]["cache_key"] != first["localization_cache"]["cache_key"]
+
+    changed_revision = CachedQwenLocalizationExtractor(
+        delegate,  # type: ignore[arg-type]
+        cache_dir=tmp_path / "cache",
+        model_id="test/model",
+        model_revision="revision-b",
+        torch_dtype="float16",
+    )
+    changed_revision.analyze(image, "locate defect")
+    assert delegate.calls == 4
+
+
+def test_qwen_localization_cache_rejects_corrupt_response(tmp_path: Path) -> None:
+    class CountingExtractor:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def analyze(self, image: Image.Image, prompt: str) -> dict[str, object]:
+            self.calls += 1
+            return {"text": f"valid-{self.calls}"}
+
+        def close(self) -> None:
+            pass
+
+    delegate = CountingExtractor()
+    cached = CachedQwenLocalizationExtractor(
+        delegate,  # type: ignore[arg-type]
+        cache_dir=tmp_path / "cache",
+        model_id="test/model",
+        model_revision="revision-a",
+        torch_dtype="auto",
+    )
+    image = Image.new("RGB", (4, 4), "white")
+    first = cached.analyze(image, "prompt")
+    cache_path = Path(str(first["localization_cache"]["cache_path"]))
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    payload["response"]["text"] = "tampered"
+    cache_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    recovered = cached.analyze(image, "prompt")
+
+    assert delegate.calls == 2
+    assert recovered["text"] == "valid-2"
+    assert recovered["localization_cache"]["cache_hit"] is False
+    assert "hash mismatch" in recovered["localization_cache"]["invalid_reason"]
 
 
 def test_qwen_bbox_v2_prompt_requests_local_zipper_sub_boxes() -> None:
@@ -773,6 +855,28 @@ def test_auto_masks_use_per_image_description_override(tmp_path: Path, monkeypat
     assert rows[2]["description"] == "scratch"
 
 
+def test_auto_masks_overwrite_replays_qwen_localization_cache(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _fixture_config(tmp_path)
+    monkeypatch.setattr("iadgen_v2.auto_masks.qwen_availability", _ready_qwen)
+    monkeypatch.setattr("iadgen_v2.auto_masks.QwenFeatureExtractor", _FakeQwenExtractor)
+    first_path = run_auto_masks(config)
+    first_rows = [json.loads(line) for line in first_path.read_text(encoding="utf-8").splitlines()]
+
+    class NoAnalyzeExtractor(_FakeQwenExtractor):
+        def analyze(self, image: Image.Image, prompt: str) -> dict[str, object]:
+            raise AssertionError("Qwen generation must be bypassed by localization cache replay")
+
+    monkeypatch.setattr("iadgen_v2.auto_masks.QwenFeatureExtractor", NoAnalyzeExtractor)
+    replay_path = run_auto_masks(config)
+    replay_rows = [json.loads(line) for line in replay_path.read_text(encoding="utf-8").splitlines()]
+
+    assert [row["qwen_text"] for row in replay_rows] == [row["qwen_text"] for row in first_rows]
+    assert all(row["settings"]["qwen_localization"]["qwen_cache"]["cache_hit"] is True for row in replay_rows)
+    assert all(row["settings"]["qwen_localization"]["qwen_cache"]["response_sha256"] for row in replay_rows)
+
+
 def test_auto_masks_write_mvtec_ground_truth_and_prepare_can_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = _fixture_config(tmp_path)
     monkeypatch.setattr("iadgen_v2.auto_masks.qwen_availability", _ready_qwen)
@@ -792,6 +896,8 @@ def test_auto_masks_write_mvtec_ground_truth_and_prepare_can_load(tmp_path: Path
     assert (config.report_dir / "auto_masks" / "qwen" / "contact_sheet_mask_variants_current.png").exists()
     assert (config.report_dir / "auto_masks" / "qwen" / "contact_sheet_candidate_comparison.png").exists()
     assert all(row["settings"]["mask_truth_source"] == "qwen_auto_refined_masks" for row in rows)
+    assert all(row["settings"]["qwen_localization"]["qwen_cache"]["enabled"] is True for row in rows)
+    assert all(row["settings"]["qwen_localization"]["qwen_cache"]["cache_hit"] is False for row in rows)
     assert all(row["defect_type"] == "scratch" for row in rows)
     assert all(row["qwen_defect_type"] == "crack" for row in rows)
     for row in rows:
