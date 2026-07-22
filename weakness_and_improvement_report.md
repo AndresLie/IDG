@@ -362,20 +362,23 @@ Cache/device contracts (A7) hardened and tested; MuSc caching (A6) remains.
 
 ### Track B — generation / downstream (parallel)
 
-#### 🟡 B-S1 · Visibility/fidelity critic + visibility-targeted controller  *(fixes B2; critic half in `c4ccc37`)*
-Critic term implemented and empirically validated; controller retarget remains.
+#### 🟡 B-S1 · Visibility/fidelity critic + visibility-targeted controller  *(fixes B2; critic `c4ccc37`, controller `36a6afd`)*
+Critic + controller mechanism implemented and tested; empirical tuning (bands,
+threshold) needs an SD re-audit run.
 
 **Contract**
 - [x] Add a visibility term to `iadgen_v2/generation_critic.py` (in-mask deviation magnitude, added edge/gradient energy, local contrast vs a surrounding normal ring)
-- [~] Controller drives visibility into a morphology-specific band; coverage demoted to a min/max guard *(critic weight demoted 0.22→0.12 + opt-in gate added; Phase-4 controller retarget pending)*
+- [x] Controller drives visibility (rank tiebreak + visibility-triggered retry); coverage demoted to a guard (weight 0.22→0.12 + opt-in reject gate)
 - [ ] Freeze the exact Track-A mask manifest/hash consumed by this experiment
 
 **Tasks**
 - [x] Implement the visibility/fidelity metric + unit tests against known visible/invisible edits
 - [x] Validate on real corpus: genuine defect 0.6–0.79 vs current corpus median 0.25 (150 samples); gate@0.35 flags 97%
+- [x] Retarget the Phase-4 controller objective to visibility (rank + retry); per-attempt reason logging
 - [ ] Preregister morphology-specific bands from real-defect reference patches and labeled fixtures
-- [ ] Retarget the Phase-4 controller objective to visibility; per-attempt reason logging
-- [ ] Re-audit a stratified sample with two blinded reviewers; tune `min_defect_visibility_score`
+- [ ] SD re-audit: set `target_defect_visibility` / `min_defect_visibility_score`, regenerate, two-reviewer blind check
+
+**Acceptance / exit gate** — pending the SD re-audit (mechanism is in place, gate defaults off)
 
 **Acceptance / exit gate**
 - [ ] Mean visibility improves by `≥ 0.020` over the frozen 0.0551 baseline, with a morphology-stratified 95% bootstrap CI excluding zero
