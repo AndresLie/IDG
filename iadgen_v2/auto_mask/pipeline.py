@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Iterable
@@ -37,13 +38,18 @@ def run_generic_evidence_pipeline(
     variant_dir.mkdir(parents=True, exist_ok=True)
     evidence = []
     failures: dict[str, str] = {}
+    provider_seconds: dict[str, float] = {}
     for provider in providers:
+        name = getattr(provider, "name", type(provider).__name__)
+        start = time.monotonic()
         try:
             item = provider.compute(context)
             evidence.append(item)
             _save_float_mask(item.values, output_dir / f"{artifact_stem}_{item.source}_evidence.png")
         except Exception as exc:
-            failures[getattr(provider, "name", type(provider).__name__)] = str(exc)
+            failures[name] = str(exc)
+        finally:
+            provider_seconds[name] = round(time.monotonic() - start, 3)
     if not evidence:
         raise ValueError(f"Generic evidence pipeline produced no evidence: {failures}")
     fused, disagreement, fusion_metadata = fuse_evidence_maps(evidence)
@@ -183,6 +189,7 @@ def run_generic_evidence_pipeline(
             "architecture": "v3-generic-evidence",
             "fused_evidence_path": str(fused_path),
             "source_disagreement_path": str(disagreement_path),
+            "provider_seconds": provider_seconds,
             "edge_refinement": {
                 "enabled": bool(edge_refiner is not None),
                 "edge_aligned_evidence_path": str(edge_aligned_path) if edge_aligned_path is not None else None,
