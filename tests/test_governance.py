@@ -10,6 +10,7 @@ from iadgen_v2.auto_mask.contracts import CandidateProposal, EvidenceMap, Select
 from iadgen_v2.auto_mask.specialists import specialist_applicability
 from iadgen_v2.config import load_config
 from iadgen_v2.governance import (
+    architecture_core_fingerprint,
     build_experiment_manifest,
     validate_governance_for_command,
     write_experiment_manifest,
@@ -127,6 +128,65 @@ def test_specialists_activate_from_structure_not_category_name() -> None:
         structure_profile="ring_sector",
         attributes={"scale": "large"},
     )
+    assert specialist_applicability("edge_border_layout", structure_profile="edge_border")
+
+
+def test_architecture_fingerprint_covers_behavior_but_not_operational_device(tmp_path: Path) -> None:
+    common = [
+        "auto_masks:",
+        "  architecture: generic_evidence",
+        "  qwen_prompt_style: defect_localization_json",
+        "  qwen_device: cpu",
+        "  generic_evidence:",
+        "    sam_positive_points: 5",
+    ]
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+            extra=common,
+        )
+    )
+    original = architecture_core_fingerprint(config)
+    config.data["auto_masks"]["qwen_device"] = "cuda"
+    assert architecture_core_fingerprint(config) == original
+    config.data["auto_masks"]["max_images_per_target"] = 1
+    assert architecture_core_fingerprint(config) != original
+    config.data["auto_masks"].pop("max_images_per_target")
+    config.data["auto_masks"]["generic_evidence"]["sam_positive_points"] = 7
+    assert architecture_core_fingerprint(config) != original
+
+
+def test_generic_generation_is_blocked_by_failed_development_gate(tmp_path: Path) -> None:
+    gate = tmp_path / "reports" / "gate.json"
+    gate.parent.mkdir(parents=True)
+    gate.write_text('{"go": false, "architecture_tag": "test"}\n', encoding="utf-8")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=[
+                "  architecture_tag: test",
+                "  development_categories: [part]",
+                "  locked_categories: []",
+                f"  generic_mask_gate_path: {gate}",
+            ],
+            extra=["auto_masks:", "  architecture: generic_evidence"],
+        )
+    )
+
+    with pytest.raises(ValueError, match="development mask gate did not pass"):
+        validate_governance_for_command(config, "phase4-generate")
+
+
+def test_unregistered_command_has_no_official_mask_policy(tmp_path: Path) -> None:
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    with pytest.raises(ValueError, match="no registered governance policy"):
+        validate_governance_for_command(config, "unregistered-command")
 
 
 def _config_path(

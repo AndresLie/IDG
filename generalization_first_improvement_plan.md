@@ -2,34 +2,88 @@
 
 ## Implementation Checkpoint: 2026-07-22
 
-Sprint 0 is implemented for the bottle/zipper development benchmark:
+The `v3-generic-evidence` production path is implemented behind
+`auto_masks.architecture: generic_evidence`. The category-specialized path
+remains available as the frozen `v2-specialist-baseline`.
 
-- development and locked category roles are machine-readable;
-- locked official-mask roots are validated as isolated from runtime dataset,
-  output, and report roots;
-- runtime commands reject config references into locked official-mask roots;
-- CLI commands emit config, code, model-settings, dependency, dataset, and
-  governance fingerprints;
-- the bottle/zipper config is tagged `v2-specialist-baseline` rather than
-  zero-shot evidence;
-- the locked benchmark protocol is stored in
-  `research_protocols/generalization_benchmark_v1.yaml`.
+Implemented integrity and compatibility work:
 
-The Sprint 1 foundation is implemented:
+- every CLI command is covered by an explicit runtime, official-preparation,
+  or official-evaluation policy;
+- only `locked-evaluate` can score against isolated official locked masks;
+- lifecycle manifests record status, elapsed time, parent hashes, output
+  hashes, content-based dataset fingerprints, and runtime resource usage;
+- failed auto-mask runs retain diagnostic partial metadata without replacing
+  the last successful stable metadata;
+- generic Phase 4/5/11 execution is blocked until the development gate passes;
+- architecture freezing hashes behavioral configuration, code, selector, and
+  configured SAM checkpoints;
+- all `18` bottle/zipper legacy modes and binary-mask SHA-256 hashes reproduce
+  exactly after cached reselection;
+- legacy official-mask metrics remain bottle Dice `0.7468` and zipper Dice
+  `0.6180`;
+- the complete regression suite currently passes: `198 passed`.
 
-- auto-mask records and general evidence/proposal/selection contracts moved to
-  `iadgen_v2/auto_mask/contracts.py`;
-- structural inference moved to `iadgen_v2/auto_mask/structure.py`;
-- specialist applicability moved to `iadgen_v2/auto_mask/specialists.py`;
-- repeated-chain, polar-rim, and edge-border specialists now activate through
-  structure profiles at the applicability boundary;
-- current bottle/zipper metrics reproduce exactly after cached-candidate
-  reselection.
+Implemented generic architecture work:
 
-Remaining Sprint 1 work is mechanical extraction of evidence providers,
-proposal construction, selection, and mask-role code from the legacy
-`auto_masks.py` module. Algorithmic behavior should remain frozen until that
-extraction is complete.
+- production execution now constructs `AutoMaskContext`, `EvidenceMap`,
+  `CandidateProposal`, and `SelectionDecision` contracts;
+- multi-scale DINOv2-small evidence uses layers `-4` and `-1`, scales `448`
+  and `672`, and content-addressed caching;
+- DINO correspondence plus RANSAC affine registration falls back to an
+  unregistered residual below the configured confidence thresholds;
+- MuSc-style mutual rarity and texture residuals share the evidence-provider
+  interface;
+- evidence sources use leave-one-normal-out median/MAD calibration and
+  reliability-weighted logit fusion;
+- Qwen regions are soft priors with `1.0 / 0.5 / 0.2` inside, margin, and
+  outside weights;
+- proposal generation uses fused quantiles, component combinations, and
+  anomaly-supported SAM2 prompts;
+- three leave-category-out HistGradientBoosting regressors predict candidate
+  IoU, precision, and recall from normal-only synthetic corruption data;
+- isotonic calibration, a 90% conformal lower bound, mathematically consistent
+  precision/recall-to-IoU projection, and abstention are active;
+- posterior-derived core, possible, uncertainty, training, evaluation, and
+  inpainting mask roles are serialized without changing legacy consumers;
+- expensive normal-null calibration and evidence maps now have deterministic
+  disk caches.
+
+Selector training completed on `5,097` candidate rows spanning five
+development categories and six corruption families. Its 90% conformal residual
+is `0.03738`.
+
+Current fixed three-category smoke result:
+
+| Category | Dice | Precision | Recall | Search Recall | Regret |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `metal_nut` | `0.1187` | `0.0657` | `0.6159` | `1.0000` | `0.5367` |
+| `tile` | `0.5654` | `0.4356` | `0.8055` | `1.0000` | `0.3528` |
+| `wood` | `0.5430` | `0.9993` | `0.3728` | `0.5666` | `0.0000` |
+
+Macro Dice is `0.4090`, worst-category Dice is `0.1187`, accepted coverage is
+`66.67%`, mean search-region recall is `0.8555`, and selector regret is
+`0.2965`. The corrected uncached rigorous smoke run took `644.23` seconds for
+three images. An immediate deterministic-cache replay took `41.13` seconds,
+with every evidence provider reporting a cache hit. Peak process RSS was
+`4.75 GiB` and peak CUDA allocation was `7.91 GiB`. The result is below every
+release gate except individual tile/wood mask quality, so
+`v3-generic-evidence-rc1` has not been frozen.
+
+The main observed failure is domain shift between simple synthetic corruption
+training and real structural defects. Metal-nut evidence over-segments normal
+product structure, while wood localization remains too narrow. These failures
+must be fixed with generic evidence/selector improvements and full five-category
+leave-one-out validation, not category-name rules.
+
+Sprint 4 architecture comparison, Sprint 5 locked evaluation, and Sprint 6
+generation remain gated. No locked official mask has been opened by this path,
+and Phase 4 generation remains frozen as required.
+
+One modularity caveat remains: the generic execution path is modular, but the
+frozen legacy implementation is still physically retained in the large
+`auto_masks.py` compatibility module. Removing it would violate the exact
+legacy reproduction requirement unless it is first moved mechanically.
 
 ## Executive Decision
 

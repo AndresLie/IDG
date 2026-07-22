@@ -30,6 +30,11 @@ SPECIALISTS = {
         structure_profiles=frozenset({"ring_sector"}),
         scales=frozenset({"micro", "small"}),
     ),
+    "edge_border_layout": SpecialistDescriptor(
+        mode="edge_border_layout",
+        structure_profiles=frozenset({"edge_border"}),
+    ),
+    # Compatibility alias used only by the frozen specialist baseline.
     "zipper_fabric_border_layout": SpecialistDescriptor(
         mode="zipper_fabric_border_layout",
         structure_profiles=frozenset({"edge_border"}),

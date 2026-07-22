@@ -24,7 +24,10 @@ def posterior_mask_roles(
     if not positive_core.any():
         positive_core = selected.mask & (fused >= float(np.quantile(fused[selected.mask], 0.65)))
     training_soft = np.clip(fused * (1.0 - 0.75 * uncertainty) * possible_region, 0.0, 1.0)
-    if decision.disposition == "hard_mask_ok":
+    # A soft training policy describes label confidence, not permission to
+    # replace the selector's conservative binary proposal. Only abstained
+    # review cases fall back to the majority-supported positive core.
+    if decision.disposition in {"hard_mask_ok", "soft_mask_only"}:
         eval_tight = selected.mask
     else:
         eval_tight = positive_core

@@ -89,14 +89,21 @@ class MultiScaleDinoProvider:
                 calibration={"median": float(cached["median"]), "mad": float(cached["mad"])},
                 augmentation_consistency=float(cached["consistency"]),
                 artifact_path=cache_path,
-                metadata={"cache_hit": True, "scales": list(self.scales), "layers": list(self.layers)},
+                metadata={
+                    "cache_hit": True,
+                    "scales": list(self.scales),
+                    "layers": list(self.layers),
+                    "calibration_source": "leave_one_normal_out",
+                },
             )
         processor, model, device = _load_model(self.model_id, self.cache_dir, self.device)
         image = Image.open(context.image_path).convert("RGB")
         scale_maps: list[np.ndarray] = []
+        scale_calibrations: list[dict[str, float]] = []
+        normal_medians: list[float] = []
         for scale in self.scales:
             target, grid = _tokens(processor, model, device, image, scale, self.layers)
-            memory_parts = []
+            memory_parts: list[np.ndarray] = []
             for path in context.normal_paths[: self.max_normals]:
                 normal = Image.open(path).convert("RGB")
                 values, _ = _tokens(processor, model, device, normal, scale, self.layers)
@@ -104,13 +111,45 @@ class MultiScaleDinoProvider:
             if not memory_parts:
                 raise ValueError("DINOv2 evidence requires normal references")
             distance = _nearest_distance(target, np.concatenate(memory_parts, axis=0))
-            scale_maps.append(_resize_map(distance, grid, context.image_size))
-        raw = np.mean(np.stack(scale_maps), axis=0)
-        probability, calibration = robust_probability(raw)
+            calibration_values: list[np.ndarray] = []
+            if len(memory_parts) >= 2:
+                for index, held_out in enumerate(memory_parts):
+                    other_memory = np.concatenate([part for part_index, part in enumerate(memory_parts) if part_index != index], axis=0)
+                    held_distance = _nearest_distance(held_out, other_memory)
+                    calibration_values.append(held_distance)
+                    normal_medians.append(float(np.median(held_distance)))
+            if calibration_values:
+                values = np.concatenate(calibration_values)
+                median = float(np.median(values))
+                calibration = {"median": median, "mad": max(1e-6, float(np.median(np.abs(values - median))))}
+            else:
+                calibration = None
+            scale_probability, used_calibration = robust_probability(
+                _resize_map(distance, grid, context.image_size),
+                calibration,
+            )
+            scale_maps.append(scale_probability)
+            scale_calibrations.append(used_calibration)
+        probability = np.mean(np.stack(scale_maps), axis=0)
         probability = apply_soft_spatial_prior(probability, context.semantic_regions)
         normalized = [(item - item.mean()) / max(1e-6, item.std()) for item in scale_maps]
-        consistency = float(np.clip(np.mean(np.corrcoef(item.reshape(-1), normalized[0].reshape(-1))[0, 1] for item in normalized), 0.0, 1.0))
-        reliability = float(np.clip(0.45 + 0.35 * consistency + 0.20 * min(1.0, len(context.normal_paths) / 8.0), 0.05, 1.0))
+        correlations = [
+            float(np.nan_to_num(np.corrcoef(item.reshape(-1), normalized[0].reshape(-1))[0, 1], nan=0.0))
+            for item in normalized
+        ]
+        consistency = float(np.clip(np.mean(correlations), 0.0, 1.0))
+        normal_stability = float(1.0 / (1.0 + 10.0 * np.std(normal_medians))) if normal_medians else 0.5
+        reliability = float(
+            np.clip(
+                0.30 + 0.30 * consistency + 0.20 * normal_stability + 0.20 * min(1.0, len(context.normal_paths) / 8.0),
+                0.05,
+                1.0,
+            )
+        )
+        calibration = {
+            "median": float(np.mean([item["median"] for item in scale_calibrations])),
+            "mad": float(np.mean([item["mad"] for item in scale_calibrations])),
+        }
         if cache_path is not None:
             cache_path.parent.mkdir(parents=True, exist_ok=True)
             np.savez_compressed(cache_path, values=probability, reliability=reliability, median=calibration["median"], mad=calibration["mad"], consistency=consistency)
@@ -121,13 +160,20 @@ class MultiScaleDinoProvider:
             calibration=calibration,
             augmentation_consistency=consistency,
             artifact_path=cache_path,
-            metadata={"cache_hit": False, "scales": list(self.scales), "layers": list(self.layers), "normals_used": min(len(context.normal_paths), self.max_normals)},
+            metadata={
+                "cache_hit": False,
+                "scales": list(self.scales),
+                "layers": list(self.layers),
+                "normals_used": min(len(context.normal_paths), self.max_normals),
+                "normal_stability": normal_stability,
+                "calibration_source": "leave_one_normal_out" if len(memory_parts) >= 2 else "target_fallback",
+            },
         )
 
     def _cache_path(self, context: AutoMaskContext) -> Path | None:
         if self.artifact_dir is None:
             return None
-        identity = f"{context.cache_key}|{self.model_id}|{self.scales}|{self.layers}|{self.max_normals}|{self.memory_stride}"
+        identity = f"v2-loo|{context.cache_key}|{self.model_id}|{self.scales}|{self.layers}|{self.max_normals}|{self.memory_stride}"
         return self.artifact_dir / f"{hashlib.sha256(identity.encode()).hexdigest()}.npz"
 
 
@@ -142,9 +188,27 @@ class RegisteredDinoResidualProvider:
     max_normals: int = 16
     min_inlier_ratio: float = 0.25
     max_reprojection_error: float = 8.0
+    artifact_dir: Path | None = None
     last_registration: RegistrationResult | None = field(default=None, init=False)
 
     def compute(self, context: AutoMaskContext) -> EvidenceMap:
+        cache_path = self._cache_path(context)
+        if cache_path is not None and cache_path.exists():
+            cached = np.load(cache_path)
+            return EvidenceMap(
+                source=self.name,
+                values=cached["values"].astype(np.float32),
+                reliability=float(cached["reliability"]),
+                calibration={"median": float(cached["median"]), "mad": float(cached["mad"])},
+                artifact_path=cache_path,
+                metadata={
+                    "cache_hit": True,
+                    "registration_applied": bool(cached["registration_applied"]),
+                    "registration_inlier_ratio": float(cached["registration_inlier_ratio"]),
+                    "registration_reprojection_error": float(cached["registration_reprojection_error"]),
+                    "calibration_source": str(cached["calibration_source"]),
+                },
+            )
         processor, model, device = _load_model(self.model_id, self.cache_dir, self.device)
         image = Image.open(context.image_path).convert("RGB")
         target_tokens, grid = _tokens(processor, model, device, image, self.scale, (self.layer,))
@@ -186,21 +250,67 @@ class RegisteredDinoResidualProvider:
             raise ValueError("Registered residual could not match a normal reference")
         _, registration, raw = best
         self.last_registration = registration
-        probability, calibration = robust_probability(raw)
+        normal_samples: list[np.ndarray] = []
+        calibration_paths = list(context.normal_paths[: min(self.max_normals, 5)])
+        for index in range(len(calibration_paths) - 1):
+            first = np.asarray(
+                Image.open(calibration_paths[index]).convert("RGB").resize(context.image_size, Image.Resampling.BILINEAR),
+                dtype=np.float32,
+            )
+            second = np.asarray(
+                Image.open(calibration_paths[index + 1]).convert("RGB").resize(context.image_size, Image.Resampling.BILINEAR),
+                dtype=np.float32,
+            )
+            normal_samples.append(_appearance_residual(first, second)[::8, ::8].reshape(-1))
+        normal_calibration = None
+        if normal_samples:
+            normal_values = np.concatenate(normal_samples)
+            normal_median = float(np.median(normal_values))
+            normal_calibration = {
+                "median": normal_median,
+                "mad": max(1e-6, float(np.median(np.abs(normal_values - normal_median)))),
+            }
+        probability, calibration = robust_probability(raw, normal_calibration)
         probability = apply_soft_spatial_prior(probability, context.semantic_regions)
         reliability = float(np.clip(0.25 + 0.75 * registration.confidence, 0.05, 1.0))
-        return EvidenceMap(
+        result = EvidenceMap(
             source=self.name,
             values=probability,
             reliability=reliability,
             calibration=calibration,
+            artifact_path=cache_path,
             metadata={
+                "cache_hit": False,
                 "registration_applied": registration.applied,
                 "registration_inlier_ratio": registration.inlier_ratio,
                 "registration_reprojection_error": registration.reprojection_error,
                 "registration_reference_path": str(registration.reference_path),
+                "calibration_source": "leave_one_normal_out" if normal_calibration else "target_fallback",
             },
         )
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                cache_path,
+                values=result.values,
+                reliability=result.reliability,
+                median=result.calibration["median"],
+                mad=result.calibration["mad"],
+                registration_applied=registration.applied,
+                registration_inlier_ratio=registration.inlier_ratio,
+                registration_reprojection_error=registration.reprojection_error,
+                calibration_source=result.metadata["calibration_source"],
+            )
+        return result
+
+    def _cache_path(self, context: AutoMaskContext) -> Path | None:
+        if self.artifact_dir is None:
+            return None
+        identity = (
+            f"v1-loo|{context.cache_key}|{self.model_id}|{self.scale}|{self.layer}|{self.max_normals}|"
+            f"{self.min_inlier_ratio}|{self.max_reprojection_error}"
+        )
+        return self.artifact_dir / f"{hashlib.sha256(identity.encode()).hexdigest()}.npz"
 
 
 def _grid_coordinates(grid: tuple[int, int], image_size: tuple[int, int]) -> np.ndarray:

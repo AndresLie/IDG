@@ -14,7 +14,12 @@ from PIL import Image
 from sklearn.metrics import average_precision_score
 
 from iadgen_v2.config import AppConfig
-from iadgen_v2.governance import governance_settings, validate_governance_config
+from iadgen_v2.governance import (
+    governance_settings,
+    validate_frozen_architecture,
+    validate_governance_config,
+    validate_sealed_runtime_manifest,
+)
 from iadgen_v2.records import write_json
 from iadgen_v2.segmentation import segmentation_metrics
 
@@ -34,12 +39,30 @@ def run_locked_evaluation(config: AppConfig, *, runtime_manifest: Path, referenc
         raise ValueError("reference manifest must live under a configured locked official-mask root")
     if any(_is_within(runtime_manifest, root) for root in official_roots):
         raise ValueError("runtime manifest must remain outside locked official-mask roots")
+    auto = config.data.get("auto_masks", {})
+    if isinstance(auto, dict) and str(auto.get("architecture", "legacy_specialist")) == "generic_evidence":
+        validate_frozen_architecture(config, summary=governance)
+        validate_sealed_runtime_manifest(config, runtime_manifest)
     architecture = str(governance["architecture_tag"])
     output_dir = config.report_dir / "locked_evaluation" / architecture
     seal_path = output_dir / "seal.json"
     if seal_path.exists() and not bool(governance_settings(config).get("allow_locked_evaluation_rerun", False)):
         raise RuntimeError(f"Locked evaluation is already sealed for {architecture}: {seal_path}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    attempt = {
+        "status": "started",
+        "architecture_tag": architecture,
+        "started_at_utc": datetime.now(timezone.utc).isoformat(),
+        "runtime_manifest": _file_record(runtime_manifest),
+        "reference_manifest": _file_record(reference_manifest),
+        "rerun_forbidden": not bool(governance_settings(config).get("allow_locked_evaluation_rerun", False)),
+    }
+    # This is deliberately written before resolving or opening any official
+    # mask. An interrupted attempt remains sealed and auditable.
+    write_json(seal_path, attempt)
     runtime_rows = _read_rows(runtime_manifest)
+    if not runtime_rows:
+        raise ValueError("Locked runtime manifest contains no prediction rows")
     references = _reference_index(reference_manifest, official_roots)
     metrics: list[dict[str, Any]] = []
     for row in runtime_rows:
@@ -81,7 +104,6 @@ def run_locked_evaluation(config: AppConfig, *, runtime_manifest: Path, referenc
                 "confidence": float(decision.get("confidence", math.nan)),
             }
         )
-    output_dir.mkdir(parents=True, exist_ok=True)
     csv_path = output_dir / "locked_metrics.csv"
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(metrics[0]))
@@ -92,7 +114,9 @@ def run_locked_evaluation(config: AppConfig, *, runtime_manifest: Path, referenc
     write_json(
         seal_path,
         {
+            "status": "complete",
             "architecture_tag": architecture,
+            "started_at_utc": attempt["started_at_utc"],
             "sealed_at_utc": datetime.now(timezone.utc).isoformat(),
             "runtime_manifest": _file_record(runtime_manifest),
             "reference_manifest": _file_record(reference_manifest),

@@ -18,6 +18,9 @@ class CandidatePrediction:
     expected_recall: float
     conformal_iou_lower_bound: float
     source_disagreement: float
+    direct_expected_iou: float | None = None
+    precision_recall_iou: float | None = None
+    prediction_inconsistency: float = 0.0
 
 
 class GenericCandidateSelector:
@@ -64,22 +67,27 @@ class GenericCandidateSelector:
     def _predict(self, proposal: CandidateProposal) -> CandidatePrediction:
         features = np.asarray([[float(proposal.measurements.get(name, 0.0)) for name in MEASUREMENT_NAMES]], dtype=np.float32)
         if self.bundle is not None:
-            expected_iou = float(np.clip(self.bundle["iou_model"].predict(features)[0], 0.0, 1.0))
+            direct_expected_iou = float(np.clip(self.bundle["iou_model"].predict(features)[0], 0.0, 1.0))
             expected_precision = float(np.clip(self.bundle["precision_model"].predict(features)[0], 0.0, 1.0))
             expected_recall = float(np.clip(self.bundle["recall_model"].predict(features)[0], 0.0, 1.0))
             calibrator = self.bundle.get("iou_calibrator")
             if calibrator is not None:
-                expected_iou = float(np.clip(calibrator.predict([expected_iou])[0], 0.0, 1.0))
+                direct_expected_iou = float(np.clip(calibrator.predict([direct_expected_iou])[0], 0.0, 1.0))
             residual = float(self.bundle.get("conformal_residual_q90", 0.15))
         else:
             coverage = float(proposal.measurements.get("evidence_coverage", 0.0))
             agreement = float(proposal.measurements.get("source_agreement", 0.0))
             disagreement = float(proposal.measurements.get("source_disagreement", 1.0))
             area = float(proposal.measurements.get("area_fraction", 0.0))
-            expected_iou = float(np.clip(0.10 + 0.48 * coverage + 0.30 * agreement - 0.32 * disagreement - 0.25 * max(0.0, area - 0.20), 0.0, 1.0))
+            direct_expected_iou = float(np.clip(0.10 + 0.48 * coverage + 0.30 * agreement - 0.32 * disagreement - 0.25 * max(0.0, area - 0.20), 0.0, 1.0))
             expected_precision = float(np.clip(0.15 + 0.55 * coverage + 0.20 * agreement - 0.25 * disagreement, 0.0, 1.0))
             expected_recall = float(np.clip(0.10 + 0.40 * agreement + 0.30 * min(1.0, area / 0.08) - 0.20 * disagreement, 0.0, 1.0))
             residual = 0.18
+        precision_recall_iou = _iou_from_precision_recall(expected_precision, expected_recall)
+        # The three regressors are trained independently. On out-of-distribution
+        # defects they can disagree sharply, so rank by the conservative value
+        # that is consistent with the predicted precision and recall.
+        expected_iou = min(direct_expected_iou, precision_recall_iou)
         return CandidatePrediction(
             mode=proposal.mode,
             expected_iou=expected_iou,
@@ -87,7 +95,17 @@ class GenericCandidateSelector:
             expected_recall=expected_recall,
             conformal_iou_lower_bound=max(0.0, expected_iou - residual),
             source_disagreement=float(proposal.measurements.get("source_disagreement", 1.0)),
+            direct_expected_iou=direct_expected_iou,
+            precision_recall_iou=precision_recall_iou,
+            prediction_inconsistency=abs(direct_expected_iou - precision_recall_iou),
         )
+
+
+def _iou_from_precision_recall(precision: float, recall: float) -> float:
+    denominator = precision + recall - precision * recall
+    if denominator <= 1e-8:
+        return 0.0
+    return float(np.clip((precision * recall) / denominator, 0.0, 1.0))
 
 
 def fit_selector_bundle(rows: list[dict[str, Any]], output_path: Path) -> Path:

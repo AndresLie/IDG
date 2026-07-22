@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import time
@@ -9,13 +10,21 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from iadgen_v2.auto_mask.contracts import AutoMaskContext, EvidenceMap
+from iadgen_v2.auto_mask.contracts import AutoMaskContext, CandidateProposal, EvidenceMap, SelectionDecision
 from iadgen_v2.auto_mask.evidence import apply_soft_spatial_prior, fuse_evidence_maps
+from iadgen_v2.auto_mask.evidence.base import FunctionalEvidenceProvider
+from iadgen_v2.auto_mask.mask_roles import posterior_mask_roles
 from iadgen_v2.auto_mask.pipeline import run_generic_evidence_pipeline
 from iadgen_v2.auto_mask.proposals import MEASUREMENT_NAMES, generate_generic_proposals
-from iadgen_v2.auto_mask.selection import GenericCandidateSelector, fit_selector_bundle
+from iadgen_v2.auto_mask.selection import GenericCandidateSelector, _iou_from_precision_recall, fit_selector_bundle
+from iadgen_v2.auto_masks import reselect_auto_masks
 from iadgen_v2.config import load_config
-from iadgen_v2.governance import dataset_inventory, finalize_experiment_manifest, write_experiment_manifest
+from iadgen_v2.governance import (
+    architecture_core_fingerprint,
+    dataset_inventory,
+    finalize_experiment_manifest,
+    write_experiment_manifest,
+)
 from iadgen_v2.locked_evaluation import run_locked_evaluation
 
 
@@ -35,6 +44,73 @@ def test_soft_spatial_prior_does_not_erase_outside_evidence() -> None:
     assert weighted[10, 10] == pytest.approx(1.0)
     assert weighted[0, 0] == pytest.approx(0.2)
     assert weighted[4, 4] == pytest.approx(0.5)
+
+
+def test_soft_policy_keeps_selected_conservative_eval_proposal() -> None:
+    fused = np.zeros((12, 12), dtype=np.float32)
+    fused[3:9, 3:9] = 0.6
+    fused[5:7, 5:7] = 0.9
+    selected_mask = np.zeros_like(fused, dtype=bool)
+    selected_mask[3:9, 3:9] = True
+    evidence = [EvidenceMap(source="test", values=fused, reliability=1.0)]
+    proposal = CandidateProposal(mode="selected", mask=selected_mask, score=0.5)
+    decision = SelectionDecision(
+        selected_mode="selected",
+        disposition="soft_mask_only",
+        expected_iou=0.4,
+        expected_precision=0.6,
+        expected_recall=0.5,
+        conformal_iou_lower_bound=0.3,
+        source_disagreement=0.3,
+        confidence=0.7,
+    )
+
+    roles = posterior_mask_roles(
+        fused,
+        np.zeros_like(fused),
+        evidence,
+        proposal,
+        decision,
+    )
+
+    assert np.array_equal(roles["eval_tight"] > 0.5, selected_mask)
+    assert np.count_nonzero(roles["positive_core"]) < np.count_nonzero(roles["eval_tight"])
+
+
+def test_selector_iou_projection_is_consistent_with_precision_and_recall() -> None:
+    assert _iou_from_precision_recall(0.8, 0.5) == pytest.approx(0.4444444)
+    assert _iou_from_precision_recall(0.0, 0.8) == 0.0
+
+
+def test_functional_provider_calibrates_from_held_out_normals(tmp_path: Path) -> None:
+    defect = tmp_path / "defect.png"
+    normals = tuple(tmp_path / f"normal_{index}.png" for index in range(3))
+    Image.new("RGB", (16, 16), (180, 180, 180)).save(defect)
+    for index, path in enumerate(normals):
+        Image.new("RGB", (16, 16), (100 + index, 100 + index, 100 + index)).save(path)
+
+    regions: list[tuple[int, int, int, int]] = []
+
+    def builder(image: Image.Image, references: list[Path], region: tuple[int, int, int, int]):
+        regions.append(region)
+        value = float(np.asarray(image, dtype=np.float32).mean() / 255.0)
+        return np.full((16, 16), value, dtype=np.float32), {"reference_count": len(references)}
+
+    context = AutoMaskContext(
+        image_path=defect,
+        normal_paths=normals,
+        image_size=(16, 16),
+        semantic_regions=((0, 0, 16, 16),),
+    )
+    provider = FunctionalEvidenceProvider("test", builder, artifact_dir=tmp_path / "cache")
+    evidence = provider.compute(context)
+    cached = provider.compute(context)
+
+    assert evidence.metadata["calibration_source"] == "leave_one_normal_out"
+    assert evidence.calibration["median"] < 0.5
+    assert cached.metadata["cache_hit"] is True
+    assert np.array_equal(cached.values, evidence.values)
+    assert set(regions) == {(0, 0, 16, 16)}
 
 
 def test_generic_proposals_selector_and_pipeline_write_contract_outputs(tmp_path: Path) -> None:
@@ -109,10 +185,12 @@ def test_manifest_finalization_records_status_and_output_hash(tmp_path: Path) ->
     manifest = json.loads(path.read_text(encoding="utf-8"))
     assert manifest["status"] == "succeeded"
     assert manifest["outputs"][0]["sha256"]
+    assert manifest["resources"]["peak_process_rss_bytes"] > 0
 
 
 def test_locked_evaluation_is_isolated_and_sealed(tmp_path: Path) -> None:
     config = load_config(_config(tmp_path, targets="locked: [defect]", development="[]", locked="[locked]"))
+    config.data["auto_masks"] = {"architecture": "generic_evidence"}
     prediction_path = tmp_path / "runtime" / "prediction.png"
     prediction_path.parent.mkdir(parents=True)
     prediction = np.zeros((32, 32), dtype=np.uint8)
@@ -126,10 +204,54 @@ def test_locked_evaluation_is_isolated_and_sealed(tmp_path: Path) -> None:
     Image.fromarray(prediction).save(truth_path)
     reference_manifest = official_root / "references.jsonl"
     reference_manifest.write_text(json.dumps({"category": "locked", "defect_type": "defect", "image_path": "000.png", "official_mask_path": str(truth_path)}) + "\n", encoding="utf-8")
+    freeze_path = tmp_path / "freeze.json"
+    config.data["research_governance"]["frozen_architecture_manifest"] = str(freeze_path)
+    freeze_path.write_text(
+        json.dumps(
+            {
+                "go": True,
+                "architecture_tag": "test-architecture",
+                "architecture_core_fingerprint": architecture_core_fingerprint(config),
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    latest = config.output_dir / "experiment_manifests" / "auto-masks" / "latest.json"
+    latest.parent.mkdir(parents=True, exist_ok=True)
+    latest.write_text(
+        json.dumps(
+            {
+                "status": "succeeded",
+                "architecture_tag": "test-architecture",
+                "outputs": [
+                    {
+                        "path": str(runtime_manifest.resolve()),
+                        "sha256": hashlib.sha256(runtime_manifest.read_bytes()).hexdigest(),
+                    }
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    runtime_payload = runtime_manifest.read_text(encoding="utf-8")
     report = run_locked_evaluation(config, runtime_manifest=runtime_manifest, reference_manifest=reference_manifest)
     assert "Category-macro Dice: `1.0000`" in report.read_text(encoding="utf-8")
+    runtime_manifest.write_text(runtime_payload + "\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not an unchanged output"):
+        run_locked_evaluation(config, runtime_manifest=runtime_manifest, reference_manifest=reference_manifest)
+    runtime_manifest.write_text(runtime_payload, encoding="utf-8")
     with pytest.raises(RuntimeError, match="already sealed"):
         run_locked_evaluation(config, runtime_manifest=runtime_manifest, reference_manifest=reference_manifest)
+
+
+def test_generic_path_rejects_legacy_cached_candidate_reselection(tmp_path: Path) -> None:
+    config = load_config(_config(tmp_path, targets="part: [defect]", development="[part]", locked="[]"))
+    config.data["auto_masks"] = {"architecture": "generic_evidence"}
+
+    with pytest.raises(ValueError, match="restricted to the frozen legacy specialist path"):
+        reselect_auto_masks(config)
 
 
 def _config(tmp_path: Path, *, targets: str, development: str, locked: str) -> Path:

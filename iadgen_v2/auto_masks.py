@@ -19,7 +19,8 @@ from iadgen_v2.auto_mask.evidence import FunctionalEvidenceProvider, MultiScaleD
 from iadgen_v2.auto_mask.pipeline import run_generic_evidence_pipeline
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector
 from iadgen_v2.auto_mask.specialists import specialist_applicability
-from iadgen_v2.auto_mask.structure import infer_structure_attributes, infer_structure_profile
+from iadgen_v2.auto_mask.legacy_structure import infer_structure_attributes, infer_structure_profile
+from iadgen_v2.auto_mask.structure import infer_structure_profile_from_measurements
 from iadgen_v2.config import AppConfig, fingerprint
 from iadgen_v2.dataset import IMAGE_EXTENSIONS
 from iadgen_v2.masks import write_mask_overlay, write_pixel_refined_bbox_masks, write_refined_bbox_masks
@@ -186,7 +187,10 @@ def run_auto_masks(config: AppConfig) -> Path:
     try:
         for category, defect_type, image_path in _defect_images(config):
             image = Image.open(image_path).convert("RGB")
-            if bool(auto.get("publish_dataset_ground_truth", True)):
+            publish_dataset_ground_truth = bool(
+                auto.get("publish_dataset_ground_truth", architecture != "generic_evidence")
+            )
+            if publish_dataset_ground_truth:
                 mask_dir = config.dataset_root / category / "ground_truth" / defect_type
             else:
                 mask_dir = output_dir / "pseudo_ground_truth" / category / defect_type
@@ -490,6 +494,11 @@ def run_auto_masks(config: AppConfig) -> Path:
 def reselect_auto_masks(config: AppConfig) -> Path:
     auto = _auto_config(config)
     _resolve_auto_paths(config, auto)
+    if _auto_architecture(auto) == "generic_evidence":
+        raise ValueError(
+            "auto-masks-reselect is restricted to the frozen legacy specialist path; "
+            "generic_evidence must rerun auto-masks so cached evidence is fused by the calibrated selector"
+        )
     provider = str(auto.get("provider", "qwen"))
     output_dir = config.output_dir / "auto_masks" / provider
     report_dir = config.report_dir / "auto_masks" / provider
@@ -10349,6 +10358,7 @@ def _run_generic_mask_artifacts(
                 max_normals=int(generic.get("max_normals", 16)),
                 min_inlier_ratio=float(generic.get("registration_min_inlier_ratio", 0.25)),
                 max_reprojection_error=float(generic.get("registration_max_reprojection_error", 8.0)),
+                artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "registered_normal_residual",
             )
         )
     if bool(generic.get("musc_enabled", True)):
@@ -10367,6 +10377,17 @@ def _run_generic_mask_artifacts(
                     knn_k=int(generic.get("musc_knn_k", 5)),
                 ),
                 base_reliability=0.72,
+                calibration_normals=int(generic.get("normal_calibration_holdouts", 3)),
+                artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "musc_mutual_rarity",
+                cache_identity=fingerprint(
+                    {
+                        "patch_size": generic.get("musc_patch_size", 17),
+                        "stride": generic.get("musc_stride", 6),
+                        "max_normals": generic.get("max_normals", 16),
+                        "max_memory_patches": generic.get("musc_max_memory_patches", 4096),
+                        "knn_k": generic.get("musc_knn_k", 5),
+                    }
+                ),
             )
         )
     if bool(generic.get("texture_residual_enabled", True)):
@@ -10381,6 +10402,9 @@ def _run_generic_mask_artifacts(
                     max_normals=int(generic.get("max_normals", 16)),
                 ),
                 base_reliability=0.58,
+                calibration_normals=int(generic.get("normal_calibration_holdouts", 3)),
+                artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "normal_texture_residual",
+                cache_identity=fingerprint({"max_normals": generic.get("max_normals", 16)}),
             )
         )
     if not providers:
@@ -10396,7 +10420,7 @@ def _run_generic_mask_artifacts(
             {
                 "image": _content_identity(image_path),
                 "normals": [_content_identity(path) for path in normal_paths[: int(generic.get("max_normals", 16))]],
-                "region": region,
+                "semantic_regions": list(dict.fromkeys(semantic_regions)),
             }
         ),
     )
@@ -10406,12 +10430,12 @@ def _run_generic_mask_artifacts(
     if str(auto.get("specialists", "disabled")) == "structural":
         profile = str(context.semantic_attributes.get("structure_profile", "unknown"))
         attributes = {"scale": str(context.semantic_attributes.get("scale", "unknown"))}
-        for mode in ("repeated_chain_refiner", "polar_rim_residual", "zipper_fabric_border_layout"):
+        for mode in ("repeated_chain_refiner", "polar_rim_residual", "edge_border_layout"):
             if not specialist_applicability(mode, structure_profile=profile, attributes=attributes):
                 continue
             try:
                 candidate = _make_mask_candidate(
-                    mode=mode,
+                    mode="zipper_fabric_border_layout" if mode == "edge_border_layout" else mode,
                     image=image,
                     category="generic",
                     defect_type="anomaly",
@@ -10440,7 +10464,7 @@ def _run_generic_mask_artifacts(
         mask, _ = _predict_sam_mask(image, target_region, points, labels, auto)
         return [np.asarray(mask.convert("L"), dtype=np.uint8) > 0] if mask is not None else []
 
-    return run_generic_evidence_pipeline(
+    artifacts = run_generic_evidence_pipeline(
         context,
         providers,
         output_dir=output_dir,
@@ -10451,6 +10475,9 @@ def _run_generic_mask_artifacts(
         min_component_area=int(auto.get("min_component_area", 12)),
         specialist_masks=specialist_masks,
     )
+    artifacts["parameters"]["specialists"] = str(auto.get("specialists", "disabled"))
+    artifacts["parameters"]["active_structural_specialists"] = sorted(specialist_masks)
+    return artifacts
 
 
 def _generic_structure_attributes(image: Image.Image, region: tuple[int, int, int, int]) -> dict[str, Any]:
@@ -10459,16 +10486,13 @@ def _generic_structure_attributes(image: Image.Image, region: tuple[int, int, in
     aspect = max(width / height, height / width)
     repeated = _repeated_texture_score(image)
     rim = _rim_geometry_score(image)
-    if repeated >= 0.55:
-        profile = "repeated_chain"
-    elif rim >= 0.65 and max(width, height) <= 0.45 * max(image.size):
-        profile = "ring_sector"
-    elif left <= 2 or top <= 2 or right >= image.width - 2 or bottom >= image.height - 2:
-        profile = "edge_border"
-    elif aspect >= 3.0:
-        profile = "thin_linear"
-    else:
-        profile = "unknown"
+    boundary_contact = float(left <= 2 or top <= 2 or right >= image.width - 2 or bottom >= image.height - 2)
+    profile = infer_structure_profile_from_measurements(
+        repeated_texture_score=repeated,
+        rim_geometry_score=rim,
+        boundary_contact=boundary_contact,
+        elongation=aspect,
+    )
     area_fraction = width * height / max(1, image.width * image.height)
     scale = "micro" if area_fraction < 0.01 else "small" if area_fraction < 0.05 else "large"
     return {

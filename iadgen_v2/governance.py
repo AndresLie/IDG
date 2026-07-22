@@ -4,6 +4,7 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import resource
 import sys
 import time
 from datetime import datetime, timezone
@@ -179,19 +180,74 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
     selector_value = auto.get("selector_model_path")
     selector_path = config.resolve_path(str(selector_value)) if selector_value else None
     selector_hash = _sha256_file(selector_path) if selector_path is not None and selector_path.is_file() else None
+    excluded_operational_keys = {
+        "write_overlays",
+        "write_variant_overlays",
+        "qwen_min_free_gib",
+        "qwen_device",
+        "dinov2_device",
+        "sam_device",
+        "selector_training",
+    }
+    behavioral_auto = {
+        key: value
+        for key, value in auto.items()
+        if key not in excluded_operational_keys and not key.endswith("_cache_dir") and key != "selector_model_path"
+    }
+    checkpoint_hashes: dict[str, str | None] = {}
+    for key in ("sam2_checkpoint", "sam_checkpoint"):
+        value = auto.get(key)
+        path = config.resolve_path(str(value)) if value else None
+        checkpoint_hashes[key] = _sha256_file(path) if path is not None and path.is_file() else None
     core = {
-        "architecture": auto.get("architecture", "legacy_specialist"),
-        "specialists": auto.get("specialists"),
-        "qwen_model": auto.get("qwen_model"),
-        "dinov2_model": auto.get("dinov2_model"),
-        "generic_evidence": auto.get("generic_evidence", {}),
-        "min_box_area_ratio": auto.get("min_box_area_ratio"),
-        "max_box_area_ratio": auto.get("max_box_area_ratio"),
-        "min_component_area": auto.get("min_component_area"),
+        "behavioral_auto_masks": behavioral_auto,
+        "checkpoint_hashes": checkpoint_hashes,
+        "foundation_model_identities": {
+            "qwen": _huggingface_model_identity(config, auto.get("qwen_model"), auto.get("qwen_cache_dir")),
+            "dinov2": _huggingface_model_identity(config, auto.get("dinov2_model"), auto.get("dinov2_cache_dir")),
+        },
         "selector_sha256": selector_hash,
         "code": code_inventory(config)["content_fingerprint"],
     }
     return fingerprint(core)
+
+
+def _huggingface_model_identity(config: AppConfig, model_id: object, cache_dir: object) -> dict[str, Any] | None:
+    if not model_id:
+        return None
+    model_name = str(model_id)
+    if not cache_dir:
+        return {"model_id": model_name, "status": "cache_not_configured"}
+    cache_root = config.resolve_path(str(cache_dir))
+    model_root = cache_root / f"models--{model_name.replace('/', '--')}"
+    refs_main = model_root / "refs" / "main"
+    revision = refs_main.read_text(encoding="utf-8").strip() if refs_main.exists() else None
+    snapshots_root = model_root / "snapshots"
+    if revision:
+        snapshot = snapshots_root / revision
+    else:
+        snapshots = sorted(path for path in snapshots_root.glob("*") if path.is_dir()) if snapshots_root.exists() else []
+        snapshot = snapshots[-1] if snapshots else None
+        revision = snapshot.name if snapshot is not None else None
+    if snapshot is None or not snapshot.exists():
+        return {"model_id": model_name, "status": "snapshot_missing", "revision": revision}
+    rows = []
+    for path in sorted(item for item in snapshot.rglob("*") if item.is_file()):
+        resolved = path.resolve()
+        rows.append(
+            {
+                "path": str(path.relative_to(snapshot)),
+                "blob": resolved.name,
+                "size": resolved.stat().st_size,
+            }
+        )
+    return {
+        "model_id": model_name,
+        "status": "resolved",
+        "revision": revision,
+        "file_count": len(rows),
+        "snapshot_fingerprint": fingerprint(rows),
+    }
 
 
 def _validate_locked_architecture_freeze(config: AppConfig, command: str, summary: dict[str, Any]) -> None:
@@ -199,6 +255,11 @@ def _validate_locked_architecture_freeze(config: AppConfig, command: str, summar
         return
     if not any(role == "locked" for role in summary.get("target_roles", {}).values()):
         return
+    validate_frozen_architecture(config, summary=summary)
+
+
+def validate_frozen_architecture(config: AppConfig, *, summary: dict[str, Any] | None = None) -> dict[str, Any]:
+    summary = summary or validate_governance_config(config)
     settings = governance_settings(config)
     value = settings.get("frozen_architecture_manifest")
     if not value:
@@ -213,6 +274,29 @@ def _validate_locked_architecture_freeze(config: AppConfig, command: str, summar
         raise ValueError("Frozen architecture tag does not match the locked config")
     if str(frozen.get("architecture_core_fingerprint")) != architecture_core_fingerprint(config):
         raise ValueError("Locked config/code/selector does not match the frozen architecture")
+    return frozen
+
+
+def validate_sealed_runtime_manifest(config: AppConfig, runtime_manifest: Path) -> dict[str, Any]:
+    runtime_manifest = runtime_manifest.resolve()
+    latest_path = config.output_dir / "experiment_manifests" / "auto-masks" / "latest.json"
+    if not latest_path.exists():
+        raise ValueError(f"Locked evaluation requires a finalized auto-mask experiment manifest: {latest_path}")
+    experiment = json.loads(latest_path.read_text(encoding="utf-8"))
+    if str(experiment.get("status")) != "succeeded":
+        raise ValueError("Locked runtime auto-mask experiment did not finish successfully")
+    governance = validate_governance_config(config)
+    if str(experiment.get("architecture_tag")) != str(governance.get("architecture_tag")):
+        raise ValueError("Locked runtime experiment architecture tag does not match evaluation config")
+    expected_hash = _sha256_file(runtime_manifest)
+    matching = [
+        item
+        for item in experiment.get("outputs", [])
+        if isinstance(item, dict) and Path(str(item.get("path", ""))).resolve() == runtime_manifest
+    ]
+    if not matching or str(matching[0].get("sha256")) != expected_hash:
+        raise ValueError("Runtime metadata is not an unchanged output of the finalized auto-mask experiment")
+    return experiment
 
 
 def build_experiment_manifest(
@@ -283,6 +367,7 @@ def finalize_experiment_manifest(
     manifest["status"] = status
     manifest["finished_at_utc"] = datetime.now(timezone.utc).isoformat()
     manifest["elapsed_seconds"] = round(max(0.0, time.monotonic() - started_monotonic), 6)
+    manifest["resources"] = runtime_resource_metrics()
     manifest["outputs"] = [_artifact_record(item) for item in output_paths if item.exists()]
     if error is not None:
         manifest["error"] = {"type": type(error).__name__, "message": str(error)}
@@ -290,6 +375,36 @@ def finalize_experiment_manifest(
     latest_path = path.parent / "latest.json"
     write_json(latest_path, {**manifest, "manifest_path": str(path)})
     return path
+
+
+def reset_runtime_resource_counters() -> None:
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+    except Exception:
+        pass
+
+
+def runtime_resource_metrics() -> dict[str, Any]:
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    # Linux reports KiB; macOS reports bytes.
+    rss_bytes = int(usage.ru_maxrss * (1 if sys.platform == "darwin" else 1024))
+    metrics: dict[str, Any] = {
+        "peak_process_rss_bytes": rss_bytes,
+        "peak_cuda_memory_bytes": 0,
+        "cuda_device": None,
+    }
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            metrics["peak_cuda_memory_bytes"] = int(torch.cuda.max_memory_allocated())
+            metrics["cuda_device"] = str(torch.cuda.get_device_name(torch.cuda.current_device()))
+    except Exception:
+        pass
+    return metrics
 
 
 def dataset_inventory(config: AppConfig) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from iadgen_v2.dataset import prepare_splits
 from iadgen_v2.feasibility import write_feasibility_report
 from iadgen_v2.governance import (
     finalize_experiment_manifest,
+    reset_runtime_resource_counters,
     validate_governance_for_command,
     write_experiment_manifest,
 )
@@ -99,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
         provider=provider,
         model=model,
     )
+    reset_runtime_resource_counters()
     try:
         label, output_path = _execute_command(args, config, manifest_path)
     except BaseException as exc:

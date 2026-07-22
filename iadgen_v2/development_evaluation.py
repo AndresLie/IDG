@@ -32,7 +32,7 @@ def run_development_evaluation(config: AppConfig, metadata_paths: list[Path] | N
         writer.writeheader()
         writer.writerows(rows)
     report_path = output_dir / "development_generalization_report.md"
-    report_path.write_text(_write_report(rows), encoding="utf-8")
+    report_path.write_text(_write_report(config, rows), encoding="utf-8")
     _write_gate(config, rows, output_dir / "generic_mask_gate.json")
     return report_path
 
@@ -106,6 +106,9 @@ def _evaluate_row(config: AppConfig, row: dict[str, Any], source: Path) -> dict[
     ranking = segmentation_metrics(score, truth, threshold=0.5)
     decision = settings.get("selection_decision", {}) if isinstance(settings.get("selection_decision"), dict) else {}
     architecture = str(settings.get("auto_mask_architecture", "legacy_specialist"))
+    parameters = settings.get("mask_parameters", {}) if isinstance(settings.get("mask_parameters"), dict) else {}
+    if architecture == "generic_evidence" and str(parameters.get("specialists", "disabled")) == "structural":
+        architecture = "generic_evidence_structural"
     return {
         "architecture": architecture,
         "metadata_source": str(source),
@@ -128,7 +131,7 @@ def _evaluate_row(config: AppConfig, row: dict[str, Any], source: Path) -> dict[
     }
 
 
-def _write_report(rows: list[dict[str, Any]]) -> str:
+def _write_report(config: AppConfig, rows: list[dict[str, Any]]) -> str:
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
     for row in rows:
         grouped[(str(row["architecture"]), str(row["category"]))].append(row)
@@ -146,8 +149,42 @@ def _write_report(rows: list[dict[str, Any]]) -> str:
         accepted_risk = 1.0 - float(np.mean([float(row["dice"]) for row in accepted])) if accepted else 1.0
         low, high = _hierarchical_bootstrap_ci(architecture_rows)
         lines.append(f"| {architecture} | `{np.mean(category_values):.4f}` | `{np.mean(sorted(category_values)[:max(1, len(category_values) // 4)]):.4f}` | `{len(accepted) / max(1, len(architecture_rows)):.4f}` | `{accepted_risk:.4f}` | `[{low:.4f}, {high:.4f}]` |")
+    manifest = _matching_runtime_manifest(config, rows)
+    if manifest is not None:
+        resources = manifest.get("resources", {}) if isinstance(manifest.get("resources"), dict) else {}
+        lines.extend(
+            [
+                "",
+                "## Runtime",
+                "",
+                f"- Auto-mask elapsed time: `{float(manifest.get('elapsed_seconds', 0.0)):.2f}` seconds",
+                f"- Peak process RSS: `{float(resources.get('peak_process_rss_bytes', 0)) / (1024 ** 3):.2f}` GiB",
+                f"- Peak CUDA allocation: `{float(resources.get('peak_cuda_memory_bytes', 0)) / (1024 ** 3):.2f}` GiB",
+            ]
+        )
     lines.append("")
     return "\n".join(lines)
+
+
+def _matching_runtime_manifest(config: AppConfig, rows: list[dict[str, Any]]) -> dict[str, Any] | None:
+    sources = {str(Path(str(row["metadata_source"])).resolve()) for row in rows}
+    directory = config.output_dir / "experiment_manifests" / "auto-masks"
+    paths = sorted(
+        (path for path in directory.glob("*.json") if path.name != "latest.json"),
+        reverse=True,
+    )
+    for path in paths:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        if str(manifest.get("status")) != "succeeded":
+            continue
+        output_paths = {
+            str(Path(str(item.get("path", ""))).resolve())
+            for item in manifest.get("outputs", [])
+            if isinstance(item, dict)
+        }
+        if sources & output_paths:
+            return manifest
+    return None
 
 
 def _hierarchical_bootstrap_ci(rows: list[dict[str, Any]], samples: int = 1000) -> tuple[float, float]:
