@@ -161,6 +161,29 @@ def test_edge_refinement_also_snaps_sam_outputs() -> None:
     assert any(mode.startswith("edge_sam2_") for mode in modes)
 
 
+def test_nearest_distance_cpu_path_matches_numpy() -> None:
+    from iadgen_v2.auto_mask.evidence.foundation import _nearest_distance, _nearest_distance_numpy
+
+    rng = np.random.default_rng(3)
+    def norm(x):
+        return x / np.linalg.norm(x, axis=1, keepdims=True)
+    target = norm(rng.standard_normal((64, 32)).astype(np.float32))
+    memory = norm(rng.standard_normal((500, 32)).astype(np.float32))
+    # Explicit CPU must produce exactly the NumPy result regardless of GPU presence.
+    assert np.allclose(_nearest_distance(target, memory, use_gpu=False), _nearest_distance_numpy(target, memory), atol=1e-6)
+
+
+def test_atomic_token_save_roundtrips_without_leftover_temp(tmp_path: Path) -> None:
+    from iadgen_v2.auto_mask.evidence.foundation import MultiScaleDinoProvider
+
+    array = np.arange(12, dtype=np.float32).reshape(3, 4)
+    target = tmp_path / "sub" / "tokens.npy"
+    MultiScaleDinoProvider._atomic_save(target, array)
+    assert target.exists()
+    assert np.array_equal(np.load(target), array)
+    assert not list(target.parent.glob("*.tmp"))
+
+
 def test_edge_refiner_is_safe_on_empty_proposal() -> None:
     aligned = np.zeros((16, 16), dtype=np.float32)
     assert EdgeAwareRefiner(aligned)(aligned, np.zeros((16, 16), dtype=bool), (0, 0, 16, 16)) == []

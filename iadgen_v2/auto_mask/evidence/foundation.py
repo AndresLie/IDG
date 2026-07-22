@@ -58,16 +58,19 @@ def _tokens(processor: Any, model: Any, device: Any, image: Image.Image, scale: 
     return values, (side, side) if side * side == count else (count, 1)
 
 
-def _nearest_distance(target: np.ndarray, memory: np.ndarray, chunk: int = 8192) -> np.ndarray:
+def _nearest_distance(target: np.ndarray, memory: np.ndarray, chunk: int = 8192, use_gpu: bool | None = None) -> np.ndarray:
     """Nearest cosine distance of each target token to the memory bank.
 
     Tokens are L2-normalized upstream, so cosine distance is ``1 - target @ memory.T``.
-    Runs on the GPU when available (chunked matmul), falling back to the exact
-    same NumPy computation otherwise. Note: this is cosine distance, not the
-    Euclidean distance ``torch.cdist`` would give.
+    Runs on the GPU only when ``use_gpu`` is true (i.e. the provider resolved to
+    a CUDA device); an explicit CPU provider stays on NumPy even when a GPU is
+    present. ``use_gpu=None`` falls back to auto-detection for standalone callers.
+    Note: this is cosine distance, not the Euclidean distance ``torch.cdist`` gives.
     """
 
-    if _gpu_knn_available():
+    if use_gpu is None:
+        use_gpu = _gpu_knn_available()
+    if use_gpu and _gpu_knn_available():
         return _nearest_distance_gpu(target, memory, chunk)
     return _nearest_distance_numpy(target, memory, chunk)
 
@@ -140,6 +143,7 @@ class MultiScaleDinoProvider:
                 },
             )
         processor, model, device = _load_model(self.model_id, self.cache_dir, self.device)
+        use_gpu = getattr(device, "type", str(device)) == "cuda"
         image = Image.open(context.image_path).convert("RGB")
         self._token_cache_hits = 0
         self._token_cache_misses = 0
@@ -154,12 +158,12 @@ class MultiScaleDinoProvider:
                 memory_parts.append(values[:: max(1, self.memory_stride)])
             if not memory_parts:
                 raise ValueError("DINOv2 evidence requires normal references")
-            distance = _nearest_distance(target, np.concatenate(memory_parts, axis=0))
+            distance = _nearest_distance(target, np.concatenate(memory_parts, axis=0), use_gpu=use_gpu)
             calibration_values: list[np.ndarray] = []
             if len(memory_parts) >= 2:
                 for index, held_out in enumerate(memory_parts):
                     other_memory = np.concatenate([part for part_index, part in enumerate(memory_parts) if part_index != index], axis=0)
-                    held_distance = _nearest_distance(held_out, other_memory)
+                    held_distance = _nearest_distance(held_out, other_memory, use_gpu=use_gpu)
                     calibration_values.append(held_distance)
                     normal_medians.append(float(np.median(held_distance)))
             if calibration_values:
@@ -213,32 +217,53 @@ class MultiScaleDinoProvider:
                 "calibration_source": "leave_one_normal_out" if len(memory_parts) >= 2 else "target_fallback",
                 "normal_token_cache_hits": int(getattr(self, "_token_cache_hits", 0)),
                 "normal_token_cache_misses": int(getattr(self, "_token_cache_misses", 0)),
-                "knn_backend": "gpu" if _gpu_knn_available() else "numpy",
+                "knn_backend": "gpu" if use_gpu else "numpy",
             },
         )
 
     def _normal_tokens(self, processor: Any, model: Any, device: Any, path: Path, scale: int) -> np.ndarray:
-        mem_key = (str(path.resolve()), self.model_id, tuple(self.layers), int(scale))
+        # Content signature (size + mtime) so a same-path content change is not
+        # served stale from the in-process cache.
+        stat = path.stat()
+        mem_key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, self.model_id, tuple(self.layers), int(scale))
         cached = _NORMAL_TOKEN_CACHE.get(mem_key)
         if cached is not None:
             self._token_cache_hits += 1
             return cached
-        disk_path = self._normal_token_disk_path(path, scale)
+        disk_path = self._normal_token_disk_path(path, scale, processor, model)
         if disk_path is not None and disk_path.exists():
-            values = np.load(disk_path).astype(np.float32)
-            _NORMAL_TOKEN_CACHE[mem_key] = values
-            self._token_cache_hits += 1
-            return values
+            try:
+                values = np.load(disk_path).astype(np.float32)
+                _NORMAL_TOKEN_CACHE[mem_key] = values
+                self._token_cache_hits += 1
+                return values
+            except Exception:
+                # Corrupted / partial cache entry: drop it and recompute.
+                disk_path.unlink(missing_ok=True)
         self._token_cache_misses += 1
         normal = Image.open(path).convert("RGB")
         values, _ = _tokens(processor, model, device, normal, scale, self.layers)
         _NORMAL_TOKEN_CACHE[mem_key] = values
         if disk_path is not None:
-            disk_path.parent.mkdir(parents=True, exist_ok=True)
-            np.save(disk_path, values)
+            self._atomic_save(disk_path, values)
         return values
 
-    def _normal_token_disk_path(self, path: Path, scale: int) -> Path | None:
+    @staticmethod
+    def _atomic_save(path: Path, values: np.ndarray) -> None:
+        import os
+        import tempfile
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".npy.tmp")
+        try:
+            with os.fdopen(fd, "wb") as handle:
+                np.save(handle, values)  # file object -> no .npy suffix rewriting
+            os.replace(tmp, path)  # atomic within the same directory
+        except Exception:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+
+    def _normal_token_disk_path(self, path: Path, scale: int, processor: Any = None, model: Any = None) -> Path | None:
         if self.artifact_dir is None:
             return None
         try:
@@ -247,11 +272,20 @@ class MultiScaleDinoProvider:
             transformers_version = transformers.__version__
         except Exception:
             transformers_version = "unknown"
+        config = getattr(model, "config", None)
+        model_identity = {
+            "model_type": getattr(config, "model_type", None),
+            "hidden_size": getattr(config, "hidden_size", None),
+            "num_hidden_layers": getattr(config, "num_hidden_layers", None),
+            "name_or_path": getattr(config, "_name_or_path", None),
+        }
         identity = json.dumps(
             {
                 "content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                 "model_id": self.model_id,
                 "transformers_version": transformers_version,
+                "processor_class": type(processor).__name__ if processor is not None else None,
+                "model_identity": model_identity,
                 "scale": int(scale),
                 "layers": list(self.layers),
                 "dtype": "float32",
