@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from iadgen_v2.auto_mask.contracts import CandidateProposal, SelectionDecision
-from iadgen_v2.auto_mask.proposals import MEASUREMENT_NAMES, paired_feature_vector
+from iadgen_v2.auto_mask.proposals import MEASUREMENT_NAMES, edge_family_code, paired_feature_vector
 
 
 @dataclass(frozen=True)
@@ -89,15 +89,24 @@ class GenericCandidateSelector:
     ) -> bool:
         paired_model = self.bundle.get("paired_model") if self.bundle is not None else None
         if paired_model is not None:
-            # Principled gate: swap only when the predicted edge-vs-parent IoU
-            # improvement, discounted by its own conformal residual, is positive.
-            if proposal is None or proposal.parent_mode is None:
+            # Principled gate: swap in the edge candidate only when its predicted
+            # IoU gain over the BEST NON-EDGE candidate it would displace,
+            # discounted by the conformal residual, is positive. This is the
+            # candidate that actually competes at selection time, so a positive
+            # lower bound is a calibrated non-regression guarantee.
+            if proposal is None or best_non_edge is None:
                 return False
-            parent = by_mode.get(proposal.parent_mode)
-            if parent is None:
+            baseline = by_mode.get(best_non_edge.mode)
+            if baseline is None:
                 return False
-            features = np.asarray([paired_feature_vector(proposal.measurements, parent.measurements)], dtype=np.float32)
-            predicted_gain = float(paired_model.predict(features)[0])
+            try:
+                features = np.asarray(
+                    [paired_feature_vector(proposal.measurements, baseline.measurements, edge_family_code(proposal.mode))],
+                    dtype=np.float32,
+                )
+                predicted_gain = float(paired_model.predict(features)[0])
+            except Exception:
+                return False  # incompatible/failed paired model -> conservative
             residual = float(self.bundle.get("paired_residual_q90", 0.10))
             return (predicted_gain - residual) > 0.0
         # Fallback (heuristic selector or bundle without a paired model): the

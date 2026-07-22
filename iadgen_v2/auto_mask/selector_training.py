@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from iadgen_v2.auto_mask.contracts import EvidenceMap
 from iadgen_v2.auto_mask.evidence import fuse_evidence_maps, robust_probability
-from iadgen_v2.auto_mask.proposals import generate_generic_proposals, paired_feature_vector
+from iadgen_v2.auto_mask.proposals import edge_family_code, generate_generic_proposals, paired_feature_vector
 from iadgen_v2.auto_mask.refinement import EdgeAwareRefiner, edge_align_field
 from iadgen_v2.auto_mask.selection import fit_selector_bundle
 from iadgen_v2.config import AppConfig
@@ -78,24 +78,29 @@ def train_generic_selector(config: AppConfig) -> Path:
                             "recall": intersection / max(1, actual),
                         }
                     )
-                # Paired edge-vs-parent rows: how much did refining the parent
-                # actually change IoU on this known-truth corruption?
-                for proposal in proposals:
-                    if not proposal.mode.startswith("edge_") or proposal.parent_mode is None:
-                        continue
-                    if proposal.parent_mode not in iou_by_mode:
-                        continue
-                    paired_rows.append(
-                        {
-                            "category": category,
-                            "corruption_family": family,
-                            "features": paired_feature_vector(
-                                measurements_by_mode[proposal.mode],
-                                measurements_by_mode[proposal.parent_mode],
-                            ),
-                            "gain": iou_by_mode[proposal.mode] - iou_by_mode[proposal.parent_mode],
-                        }
-                    )
+                # Paired edge-vs-baseline rows: how much does swapping in this
+                # edge candidate change IoU relative to the BEST non-edge
+                # candidate it would displace at selection time (not merely its
+                # own parent). Trained against the oracle-best non-edge baseline,
+                # a strong bar that makes the inference gate conservative.
+                non_edge = [(mode, iou) for mode, iou in iou_by_mode.items() if not mode.startswith("edge_")]
+                if non_edge:
+                    best_non_edge_mode = max(non_edge, key=lambda item: item[1])[0]
+                    for proposal in proposals:
+                        if not proposal.mode.startswith("edge_"):
+                            continue
+                        paired_rows.append(
+                            {
+                                "category": category,
+                                "corruption_family": family,
+                                "features": paired_feature_vector(
+                                    measurements_by_mode[proposal.mode],
+                                    measurements_by_mode[best_non_edge_mode],
+                                    edge_family_code(proposal.mode),
+                                ),
+                                "gain": iou_by_mode[proposal.mode] - iou_by_mode[best_non_edge_mode],
+                            }
+                        )
     output_dir = config.output_dir / "auto_masks" / "selector"
     output_dir.mkdir(parents=True, exist_ok=True)
     rows_path = output_dir / "synthetic_candidate_training_rows.jsonl"

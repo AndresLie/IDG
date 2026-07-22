@@ -148,20 +148,40 @@ def refine_proposals(
     return output
 
 
-def paired_feature_vector(edge_measurements: dict[str, float], parent_measurements: dict[str, float]) -> list[float]:
-    """Features for the edge-vs-parent reliability model.
+def edge_family_code(mode: str) -> float:
+    """Coarse provenance of a refined candidate, as a numeric feature.
 
-    Absolute edge measurements followed by edge-minus-parent deltas, so the
-    model can reason about the refinement relative to the candidate it improves,
-    not just the edge candidate in isolation.
+    1 = edge-refined fused-threshold blob, 2 = edge-refined SAM mask,
+    3 = edge-refined specialist. Lets the reliability model condition on where a
+    refinement came from without depending on category names.
+    """
+
+    if mode.startswith("edge_sam2_"):
+        return 2.0
+    if mode.startswith("edge_fused_"):
+        return 1.0
+    return 3.0
+
+
+def paired_feature_vector(
+    edge_measurements: dict[str, float],
+    baseline_measurements: dict[str, float],
+    family_code: float = 0.0,
+) -> list[float]:
+    """Features for the edge-vs-baseline reliability model.
+
+    Absolute edge measurements, then edge-minus-baseline deltas, then a
+    provenance code. The baseline is the candidate the edge would displace at
+    selection time (the best non-edge candidate), so the model predicts the gain
+    of the actual swap decision, not merely edge-vs-parent.
     """
 
     edge = [float(edge_measurements.get(name, 0.0)) for name in MEASUREMENT_NAMES]
     delta = [
-        float(edge_measurements.get(name, 0.0)) - float(parent_measurements.get(name, 0.0))
+        float(edge_measurements.get(name, 0.0)) - float(baseline_measurements.get(name, 0.0))
         for name in MEASUREMENT_NAMES
     ]
-    return edge + delta
+    return edge + delta + [float(family_code)]
 
 
 def proposal_from_mask(
