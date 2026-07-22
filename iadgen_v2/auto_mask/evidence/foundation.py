@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +15,10 @@ from iadgen_v2.auto_mask.evidence.base import apply_soft_spatial_prior, robust_p
 
 
 _MODEL_CACHE: dict[tuple[str, str | None, str], tuple[Any, Any, Any]] = {}
+# Normal-reference DINOv2 tokens are identical across every defect image in a
+# category, but were previously re-encoded per image. Cache them in-process
+# (and optionally on disk) so each normal is encoded once per (content, scale).
+_NORMAL_TOKEN_CACHE: dict[tuple[str, str, tuple[int, ...], int], np.ndarray] = {}
 
 
 def _load_model(model_id: str, cache_dir: str | None, device: str) -> tuple[Any, Any, Any]:
@@ -53,12 +58,50 @@ def _tokens(processor: Any, model: Any, device: Any, image: Image.Image, scale: 
     return values, (side, side) if side * side == count else (count, 1)
 
 
-def _nearest_distance(target: np.ndarray, memory: np.ndarray, chunk: int = 4096) -> np.ndarray:
+def _nearest_distance(target: np.ndarray, memory: np.ndarray, chunk: int = 8192) -> np.ndarray:
+    """Nearest cosine distance of each target token to the memory bank.
+
+    Tokens are L2-normalized upstream, so cosine distance is ``1 - target @ memory.T``.
+    Runs on the GPU when available (chunked matmul), falling back to the exact
+    same NumPy computation otherwise. Note: this is cosine distance, not the
+    Euclidean distance ``torch.cdist`` would give.
+    """
+
+    if _gpu_knn_available():
+        return _nearest_distance_gpu(target, memory, chunk)
+    return _nearest_distance_numpy(target, memory, chunk)
+
+
+def _nearest_distance_numpy(target: np.ndarray, memory: np.ndarray, chunk: int = 8192) -> np.ndarray:
     best = np.full(target.shape[0], np.inf, dtype=np.float32)
     for start in range(0, memory.shape[0], chunk):
         distance = 1.0 - target @ memory[start : start + chunk].T
         best = np.minimum(best, distance.min(axis=1))
-    return best
+    return best.astype(np.float32)
+
+
+def _gpu_knn_available() -> bool:
+    try:
+        import torch
+
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
+
+
+def _nearest_distance_gpu(target: np.ndarray, memory: np.ndarray, chunk: int = 8192) -> np.ndarray:
+    import torch
+
+    device = torch.device("cuda")
+    with torch.no_grad():
+        target_t = torch.from_numpy(np.ascontiguousarray(target, dtype=np.float32)).to(device)
+        best = torch.full((target_t.shape[0],), float("inf"), device=device)
+        for start in range(0, memory.shape[0], chunk):
+            block = torch.from_numpy(np.ascontiguousarray(memory[start : start + chunk], dtype=np.float32)).to(device)
+            distance = 1.0 - target_t @ block.T
+            best = torch.minimum(best, distance.min(dim=1).values)
+            del block
+        return best.detach().cpu().numpy().astype(np.float32)
 
 
 def _resize_map(values: np.ndarray, grid: tuple[int, int], size: tuple[int, int]) -> np.ndarray:
@@ -98,6 +141,8 @@ class MultiScaleDinoProvider:
             )
         processor, model, device = _load_model(self.model_id, self.cache_dir, self.device)
         image = Image.open(context.image_path).convert("RGB")
+        self._token_cache_hits = 0
+        self._token_cache_misses = 0
         scale_maps: list[np.ndarray] = []
         scale_calibrations: list[dict[str, float]] = []
         normal_medians: list[float] = []
@@ -105,8 +150,7 @@ class MultiScaleDinoProvider:
             target, grid = _tokens(processor, model, device, image, scale, self.layers)
             memory_parts: list[np.ndarray] = []
             for path in context.normal_paths[: self.max_normals]:
-                normal = Image.open(path).convert("RGB")
-                values, _ = _tokens(processor, model, device, normal, scale, self.layers)
+                values = self._normal_tokens(processor, model, device, Path(path), scale)
                 memory_parts.append(values[:: max(1, self.memory_stride)])
             if not memory_parts:
                 raise ValueError("DINOv2 evidence requires normal references")
@@ -167,8 +211,54 @@ class MultiScaleDinoProvider:
                 "normals_used": min(len(context.normal_paths), self.max_normals),
                 "normal_stability": normal_stability,
                 "calibration_source": "leave_one_normal_out" if len(memory_parts) >= 2 else "target_fallback",
+                "normal_token_cache_hits": int(getattr(self, "_token_cache_hits", 0)),
+                "normal_token_cache_misses": int(getattr(self, "_token_cache_misses", 0)),
+                "knn_backend": "gpu" if _gpu_knn_available() else "numpy",
             },
         )
+
+    def _normal_tokens(self, processor: Any, model: Any, device: Any, path: Path, scale: int) -> np.ndarray:
+        mem_key = (str(path.resolve()), self.model_id, tuple(self.layers), int(scale))
+        cached = _NORMAL_TOKEN_CACHE.get(mem_key)
+        if cached is not None:
+            self._token_cache_hits += 1
+            return cached
+        disk_path = self._normal_token_disk_path(path, scale)
+        if disk_path is not None and disk_path.exists():
+            values = np.load(disk_path).astype(np.float32)
+            _NORMAL_TOKEN_CACHE[mem_key] = values
+            self._token_cache_hits += 1
+            return values
+        self._token_cache_misses += 1
+        normal = Image.open(path).convert("RGB")
+        values, _ = _tokens(processor, model, device, normal, scale, self.layers)
+        _NORMAL_TOKEN_CACHE[mem_key] = values
+        if disk_path is not None:
+            disk_path.parent.mkdir(parents=True, exist_ok=True)
+            np.save(disk_path, values)
+        return values
+
+    def _normal_token_disk_path(self, path: Path, scale: int) -> Path | None:
+        if self.artifact_dir is None:
+            return None
+        try:
+            import transformers
+
+            transformers_version = transformers.__version__
+        except Exception:
+            transformers_version = "unknown"
+        identity = json.dumps(
+            {
+                "content_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                "model_id": self.model_id,
+                "transformers_version": transformers_version,
+                "scale": int(scale),
+                "layers": list(self.layers),
+                "dtype": "float32",
+            },
+            sort_keys=True,
+        )
+        return self.artifact_dir / "dino_normal_tokens" / f"{hashlib.sha256(identity.encode()).hexdigest()}.npy"
 
     def _cache_path(self, context: AutoMaskContext) -> Path | None:
         if self.artifact_dir is None:
