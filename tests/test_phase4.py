@@ -677,3 +677,51 @@ def _fixture_config(tmp_path: Path):
         encoding="utf-8",
     )
     return load_config(config_path)
+
+
+def test_attempt_rank_prefers_visibility_over_coverage() -> None:
+    high_vis = {"accepted": True, "critic_score": 0.80, "critic_defect_visibility_score": 0.60, "adaptive_mask_coverage_score": 0.30}
+    high_cov = {"accepted": True, "critic_score": 0.80, "critic_defect_visibility_score": 0.20, "adaptive_mask_coverage_score": 0.90}
+    assert phase4_mod._critic_attempt_rank(high_vis) > phase4_mod._critic_attempt_rank(high_cov)
+
+
+def test_visibility_target_triggers_visibility_retry() -> None:
+    settings = {
+        "enabled": True,
+        "strength_step": 0.05,
+        "guidance_step": 0.5,
+        "step_increment": 2,
+        "max_strength": 1.0,
+        "max_guidance_scale": 12.0,
+        "max_inference_steps": 60,
+        "target_defect_visibility": 0.40,
+    }
+    phase4 = {"strength": 0.50, "guidance_scale": 7.5, "num_inference_steps": 20}
+    # previous attempt: not a coverage reject, but under-visible
+    previous = {"reject_reasons": ["poor_texture_preservation"], "critic_defect_visibility_score": 0.10}
+    out, _prompt, _seed = phase4_mod._critic_guided_attempt_settings(
+        phase4, "prompt", {"category": "x", "defect_type": "y"}, 1234, 1, settings, previous_attempt=previous
+    )
+    assert out["critic_retry_reason"] == "low_defect_visibility"
+    # The visibility retry engages the in-mask magnitude knobs.
+    assert float(out.get("local_mask_noise_boost", 0.0)) > 0.0
+
+
+def test_visibility_retry_disabled_by_default() -> None:
+    settings = {
+        "enabled": True,
+        "strength_step": 0.05,
+        "guidance_step": 0.5,
+        "step_increment": 2,
+        "max_strength": 1.0,
+        "max_guidance_scale": 12.0,
+        "max_inference_steps": 60,
+    }  # no target_defect_visibility -> visibility retry off
+    phase4 = {"strength": 0.50, "guidance_scale": 7.5, "num_inference_steps": 20}
+    previous = {"reject_reasons": ["poor_texture_preservation"], "critic_defect_visibility_score": 0.10}
+    out, _prompt, _seed = phase4_mod._critic_guided_attempt_settings(
+        phase4, "prompt", {"category": "x", "defect_type": "y"}, 1234, 1, settings, previous_attempt=previous
+    )
+    # No coverage reject and no visibility target -> no boost retry engaged
+    assert out.get("critic_retry_reason", "") == ""
+    assert float(out.get("local_mask_noise_boost", 0.0)) == pytest.approx(0.0)

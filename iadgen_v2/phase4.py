@@ -1501,15 +1501,27 @@ def _critic_guided_attempt_settings(
     if not bool(critic_settings.get("enabled", False)) or attempt_index <= 0:
         return attempt_phase4, prompt, generation_seed
     previous_reasons = {str(reason) for reason in (previous_attempt or {}).get("reject_reasons", [])}
+    # Visibility-targeted retry: if the previous attempt was under-visible
+    # (either a hard reject or below a configured target band), escalate the
+    # same magnitude knobs. Opt-in via target_defect_visibility (default 0 =
+    # off) so behavior is unchanged until a re-audit sets the band.
+    previous_visibility = float((previous_attempt or {}).get("critic_defect_visibility_score", 1.0))
+    visibility_target = float(critic_settings.get("target_defect_visibility", 0.0))
+    low_visibility_retry = "low_defect_visibility" in previous_reasons or (
+        visibility_target > 0.0 and previous_visibility < visibility_target
+    )
     low_coverage_retry = "low_mask_coverage" in previous_reasons or not previous_reasons
+    boost_retry = low_coverage_retry or low_visibility_retry
     strength_delta = float(critic_settings["strength_step"]) * attempt_index
     guidance_delta = float(critic_settings["guidance_step"]) * attempt_index
     step_delta = int(critic_settings["step_increment"]) * attempt_index
-    if low_coverage_retry:
+    if boost_retry:
         strength_delta += float(critic_settings.get("low_coverage_extra_strength", 0.0))
         guidance_delta += float(critic_settings.get("low_coverage_extra_guidance", 0.0))
         step_delta += int(critic_settings.get("low_coverage_extra_steps", 0))
-        attempt_phase4["critic_retry_reason"] = "low_mask_coverage"
+        attempt_phase4["critic_retry_reason"] = (
+            "low_defect_visibility" if (low_visibility_retry and not low_coverage_retry) else "low_mask_coverage"
+        )
         morphology = _morphology_for_row(row)
         morph_multiplier = {
             "micro_chip": 1.25,
@@ -1614,6 +1626,7 @@ def _phase4_generation_critic(
             "morphology_fit_score": 1.0,
             "outside_change_fraction": 0.0,
             "shell_change_fraction": 0.0,
+            "critic_defect_visibility_score": 1.0,
             "accepted": True,
             "reject_reasons": [],
         }
@@ -1637,6 +1650,7 @@ def _phase4_generation_critic(
         "morphology_fit_score": round(float(scores.morphology_fit_score), 4),
         "outside_change_fraction": round(float(scores.outside_change_fraction), 4),
         "shell_change_fraction": round(float(scores.shell_change_fraction), 4),
+        "critic_defect_visibility_score": round(float(scores.defect_visibility_score), 4),
         "accepted": scores.accepted,
         "reject_reasons": scores.reject_reasons,
     }
@@ -1916,10 +1930,15 @@ def _mask_area_fraction(mask: Image.Image) -> float:
     return float((arr > 0.03).mean()) if arr.size else 0.0
 
 
-def _critic_attempt_rank(attempt: dict[str, Any]) -> tuple[int, float, float]:
+def _critic_attempt_rank(attempt: dict[str, Any]) -> tuple[int, float, float, float]:
+    # critic_score already folds in the visibility weight; visibility is also
+    # the explicit tiebreaker (ahead of coverage) so the controller prefers the
+    # most visibly-defective attempt rather than the one that merely changed the
+    # most pixels.
     return (
         1 if bool(attempt.get("accepted", False)) else 0,
         float(attempt.get("critic_score", 0.0)),
+        float(attempt.get("critic_defect_visibility_score", 0.0)),
         float(attempt.get("adaptive_mask_coverage_score", 0.0)),
     )
 
