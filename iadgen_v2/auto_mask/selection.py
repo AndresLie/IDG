@@ -24,8 +24,9 @@ class CandidatePrediction:
 
 
 class GenericCandidateSelector:
-    def __init__(self, model_path: Path | None = None) -> None:
+    def __init__(self, model_path: Path | None = None, *, edge_swap_margin: float = 0.02) -> None:
         self.model_path = model_path
+        self.edge_swap_margin = float(edge_swap_margin)
         self.bundle: dict[str, Any] | None = None
         if model_path is not None and model_path.exists():
             import joblib
@@ -39,7 +40,19 @@ class GenericCandidateSelector:
         if not proposals:
             return SelectionDecision(None, None, None, None, 0.0, "needs_review", ("no_valid_proposals",)), []
         predictions = [self._predict(proposal) for proposal in proposals]
-        best = max(predictions, key=lambda item: (item.conformal_iou_lower_bound, item.expected_iou))
+        rank_key = lambda item: (item.conformal_iou_lower_bound, item.expected_iou)
+        best = max(predictions, key=rank_key)
+        # Margin gate: an edge-refined candidate only displaces the best
+        # non-edge candidate when its uncertainty-discounted IoU clearly wins.
+        # Edge candidates are newer to the reliability model, so a near-tie
+        # should fall back to the in-distribution candidate rather than risk a
+        # confident mis-rank (observed as a zipper regression in the A/B run).
+        if best.mode.startswith("edge_"):
+            non_edge = [item for item in predictions if not item.mode.startswith("edge_")]
+            if non_edge:
+                best_non_edge = max(non_edge, key=rank_key)
+                if best.conformal_iou_lower_bound < best_non_edge.conformal_iou_lower_bound + self.edge_swap_margin:
+                    best = best_non_edge
         if best.conformal_iou_lower_bound >= 0.45 and best.source_disagreement <= 0.20:
             disposition = "hard_mask_ok"
         elif best.expected_iou >= 0.25:

@@ -10456,7 +10456,10 @@ def _run_generic_mask_artifacts(
         ),
     )
     selector_path = auto.get("selector_model_path")
-    selector = GenericCandidateSelector(Path(str(selector_path)) if selector_path else None)
+    selector = GenericCandidateSelector(
+        Path(str(selector_path)) if selector_path else None,
+        edge_swap_margin=float(generic.get("edge_swap_margin", 0.02)),
+    )
     specialist_masks: dict[str, np.ndarray] = {}
     if str(auto.get("specialists", "disabled")) == "structural":
         profile = str(context.semantic_attributes.get("structure_profile", "unknown"))
@@ -10503,6 +10506,7 @@ def _run_generic_mask_artifacts(
         artifact_stem=artifact_stem,
         selector=selector,
         sam_refiner=sam_refiner,
+        edge_refine=bool(generic.get("edge_refine", True)),
         min_component_area=int(auto.get("min_component_area", 12)),
         specialist_masks=specialist_masks,
     )

@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw, ImageFilter
 from iadgen_v2.auto_mask.contracts import EvidenceMap
 from iadgen_v2.auto_mask.evidence import fuse_evidence_maps, robust_probability
 from iadgen_v2.auto_mask.proposals import generate_generic_proposals
+from iadgen_v2.auto_mask.refinement import EdgeAwareRefiner, edge_align_field
 from iadgen_v2.auto_mask.selection import fit_selector_bundle
 from iadgen_v2.config import AppConfig
 
@@ -23,6 +24,8 @@ def train_generic_selector(config: AppConfig) -> Path:
     seed = int(settings.get("seed", 20260722))
     max_normals = int(settings.get("max_normals_per_category", 12))
     corruptions_per_image = int(settings.get("corruptions_per_image", 6))
+    generic = auto.get("generic_evidence", {}) if isinstance(auto, dict) else {}
+    edge_refine = bool(generic.get("edge_refine", True)) if isinstance(generic, dict) else True
     rng = np.random.default_rng(seed)
     categories = sorted({target.category for target in config.targets})
     rows: list[dict[str, Any]] = []
@@ -36,6 +39,15 @@ def train_generic_selector(config: AppConfig) -> Path:
                 corrupted, truth = _corrupt(clean, family, rng)
                 evidence = _synthetic_evidence(clean, corrupted, rng)
                 fused, disagreement, _ = fuse_evidence_maps(evidence)
+                # Include edge-refined candidates in training so the reliability
+                # model learns to score them, instead of meeting them for the
+                # first time at inference (which mis-ranks them).
+                edge_refiner = None
+                if edge_refine:
+                    try:
+                        edge_refiner = EdgeAwareRefiner(edge_align_field(corrupted, fused))
+                    except Exception:
+                        edge_refiner = None
                 proposals = generate_generic_proposals(
                     fused,
                     disagreement,
@@ -43,6 +55,7 @@ def train_generic_selector(config: AppConfig) -> Path:
                     (0, 0, clean.width, clean.height),
                     foreground=np.ones((clean.height, clean.width), dtype=bool),
                     min_area=8,
+                    edge_refiner=edge_refiner,
                 )
                 for proposal in proposals:
                     intersection = int((proposal.mask & truth).sum())

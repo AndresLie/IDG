@@ -16,6 +16,7 @@ from iadgen_v2.auto_mask.evidence.base import FunctionalEvidenceProvider
 from iadgen_v2.auto_mask.mask_roles import posterior_mask_roles
 from iadgen_v2.auto_mask.pipeline import run_generic_evidence_pipeline
 from iadgen_v2.auto_mask.proposals import MEASUREMENT_NAMES, generate_generic_proposals
+from iadgen_v2.auto_mask.refinement import EdgeAwareRefiner, edge_align_field, guided_filter
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector, _iou_from_precision_recall, fit_selector_bundle
 from iadgen_v2.auto_masks import reselect_auto_masks
 from iadgen_v2.config import load_config
@@ -75,6 +76,126 @@ def test_soft_policy_keeps_selected_conservative_eval_proposal() -> None:
 
     assert np.array_equal(roles["eval_tight"] > 0.5, selected_mask)
     assert np.count_nonzero(roles["positive_core"]) < np.count_nonzero(roles["eval_tight"])
+
+
+def _iou(first: np.ndarray, second: np.ndarray) -> float:
+    first = first.astype(bool)
+    second = second.astype(bool)
+    union = int((first | second).sum())
+    return float((first & second).sum() / union) if union else 0.0
+
+
+def test_guided_filter_sharpens_a_blurred_edge_toward_the_guide() -> None:
+    import cv2
+
+    guide = np.zeros((24, 24), dtype=np.float32)
+    guide[:, 12:] = 1.0  # sharp guide edge at column 12
+    src = cv2.GaussianBlur(guide, (0, 0), sigmaX=4.0)  # same edge, badly blurred
+    output = guided_filter(guide, src, radius=6, eps=1e-4)
+    # The guided output tracks the guide's sharp transition, so its steepest
+    # horizontal gradient exceeds the blurred source's.
+    src_gradient = float(np.abs(np.diff(src.mean(axis=0))).max())
+    output_gradient = float(np.abs(np.diff(output.mean(axis=0))).max())
+    assert output_gradient > src_gradient
+
+
+def test_edge_refiner_snaps_blurry_proposal_to_the_image_edge() -> None:
+    height = width = 48
+    image_array = np.zeros((height, width, 3), dtype=np.uint8)
+    image_array[:, :24] = 45
+    image_array[:, 24:] = 205  # sharp vertical edge at column 24
+    image = Image.fromarray(image_array, "RGB")
+
+    truth = np.zeros((height, width), dtype=bool)
+    truth[12:36, 24:40] = True  # true defect sits entirely on the bright side
+
+    import cv2
+
+    fused = cv2.GaussianBlur(truth.astype(np.float32), (0, 0), sigmaX=6.0)
+    fused = fused / float(fused.max())
+    proposal = fused >= 0.5
+
+    aligned = edge_align_field(image, fused, radius=6)
+    candidates = EdgeAwareRefiner(aligned, search_radius=6)(fused, proposal, (0, 0, width, height))
+
+    assert candidates, "edge refiner should propose at least one variant"
+    wrong_side = np.arange(width)[None, :] < 24
+    best = max(candidates, key=lambda mask: _iou(mask, truth))
+
+    # The refined boundary hugs the real image edge: higher IoU and no pixels
+    # bleeding across the edge into the dark (non-defect) side.
+    assert _iou(best, truth) > _iou(proposal, truth)
+    assert int((best & wrong_side).sum()) < int((proposal & wrong_side).sum())
+
+
+def test_edge_refinement_also_snaps_sam_outputs() -> None:
+    import cv2
+
+    height = width = 48
+    probability = np.zeros((height, width), dtype=np.float32)
+    probability[14:34, 26:42] = 0.9
+    probability = cv2.GaussianBlur(probability, (0, 0), sigmaX=2.0)
+    evidence = [EvidenceMap(source="x", values=np.clip(probability, 0.0, 1.0), reliability=0.8)]
+    fused, disagreement, _ = fuse_evidence_maps(evidence)
+
+    guide = np.zeros((height, width), dtype=np.float32)
+    guide[:, 24:] = 1.0
+    aligned = np.clip(0.5 * fused + 0.5 * (fused * guide), 0.0, 1.0).astype(np.float32)
+
+    def fake_sam(_fused, mask, _region):
+        grown = cv2.dilate(mask.astype(np.uint8), np.ones((5, 5), np.uint8), iterations=1) > 0
+        return [grown]
+
+    proposals = generate_generic_proposals(
+        fused,
+        disagreement,
+        evidence,
+        (0, 0, width, height),
+        sam_refiner=fake_sam,
+        edge_refiner=EdgeAwareRefiner(aligned, search_radius=6),
+    )
+    modes = [proposal.mode for proposal in proposals]
+    assert any(mode.startswith("sam2_") for mode in modes)
+    assert any(mode.startswith("edge_fused_") for mode in modes)
+    # The SAM output is itself edge-snapped, not left as a raw dilated box.
+    assert any(mode.startswith("edge_sam2_") for mode in modes)
+
+
+def test_edge_refiner_is_safe_on_empty_proposal() -> None:
+    aligned = np.zeros((16, 16), dtype=np.float32)
+    assert EdgeAwareRefiner(aligned)(aligned, np.zeros((16, 16), dtype=bool), (0, 0, 16, 16)) == []
+
+
+def _proposal(mode: str, coverage: float, agreement: float, area: float) -> CandidateProposal:
+    mask = np.zeros((16, 16), dtype=bool)
+    span = max(1, int(round((area * 256) ** 0.5)))
+    mask[:span, :span] = True
+    return CandidateProposal(
+        mode=mode,
+        mask=mask,
+        score=0.0,
+        measurements={
+            "evidence_coverage": coverage,
+            "source_agreement": agreement,
+            "source_disagreement": 0.05,
+            "area_fraction": area,
+        },
+    )
+
+
+def test_edge_candidate_needs_margin_to_displace_non_edge() -> None:
+    selector = GenericCandidateSelector(edge_swap_margin=0.05)
+    # Edge candidate is only marginally "better" by the heuristic score.
+    non_edge = _proposal("fused_q850", coverage=0.60, agreement=0.60, area=0.05)
+    edge_tie = _proposal("edge_fused_q850_1", coverage=0.61, agreement=0.60, area=0.05)
+    decision, _ = selector.select([non_edge, edge_tie])
+    # Near-tie: the in-distribution non-edge candidate is kept.
+    assert decision.selected_mode == "fused_q850"
+
+    # A clearly better edge candidate crosses the margin and is selected.
+    edge_strong = _proposal("edge_fused_q850_1", coverage=0.95, agreement=0.95, area=0.06)
+    decision2, _ = selector.select([non_edge, edge_strong])
+    assert decision2.selected_mode == "edge_fused_q850_1"
 
 
 def test_selector_iou_projection_is_consistent_with_precision_and_recall() -> None:

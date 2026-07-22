@@ -38,6 +38,7 @@ def generate_generic_proposals(
     quantiles: tuple[float, ...] = (0.85, 0.90, 0.95, 0.975),
     min_area: int = 8,
     sam_refiner: SamRefiner | None = None,
+    edge_refiner: SamRefiner | None = None,
 ) -> list[CandidateProposal]:
     region_values = _region_values(fused, region)
     proposals: list[CandidateProposal] = []
@@ -75,28 +76,75 @@ def generate_generic_proposals(
                 region=region,
                 sam_boundary_agreement=0.0,
             )
+    # SAM refines the raw fused blobs first; edge refinement then snaps BOTH the
+    # fused blobs and the SAM masks to real image edges, so the whole boundary
+    # family is edge-aware rather than only the threshold candidates.
     if sam_refiner is not None:
-        base = proposals[: min(6, len(proposals))]
-        for proposal in base:
-            for index, refined in enumerate(sam_refiner(fused, proposal.mask, region)):
-                refined = np.asarray(refined, dtype=bool)
-                support = float(fused[refined].mean()) if refined.any() else 0.0
-                if support < 0.35:
-                    continue
-                boundary_agreement = _boundary_iou(refined, proposal.mask)
-                _append_unique(
-                    proposals,
-                    seen,
-                    refined,
-                    mode=f"sam2_{proposal.mode}_{index + 1}",
-                    fused=fused,
-                    disagreement=disagreement,
-                    evidence=evidence,
-                    foreground=foreground,
-                    region=region,
-                    sam_boundary_agreement=boundary_agreement,
-                )
+        sam_base = [proposal for proposal in proposals if proposal.mode.startswith("fused_")][:6]
+        for refined in refine_proposals(
+            sam_refiner, sam_base, fused, disagreement, evidence, foreground=foreground, region=region, prefix="sam2"
+        ):
+            _append_proposal(proposals, seen, refined)
+    if edge_refiner is not None:
+        edge_base = [proposal for proposal in proposals if proposal.mode.startswith(("fused_", "sam2_"))][:8]
+        for refined in refine_proposals(
+            edge_refiner, edge_base, fused, disagreement, evidence, foreground=foreground, region=region, prefix="edge"
+        ):
+            _append_proposal(proposals, seen, refined)
     return sorted(proposals, key=lambda proposal: proposal.score, reverse=True)
+
+
+def refine_proposals(
+    refiner: SamRefiner,
+    seeds: list[CandidateProposal],
+    fused: np.ndarray,
+    disagreement: np.ndarray,
+    evidence: list[EvidenceMap],
+    *,
+    foreground: np.ndarray | None,
+    region: tuple[int, int, int, int],
+    prefix: str,
+    min_support: float = 0.35,
+) -> list[CandidateProposal]:
+    """Apply a boundary refiner to seed proposals and return gated new proposals.
+
+    Shared by SAM, edge, and specialist refinement so every refined candidate is
+    scored identically and rejected when it is not supported by the fused field.
+    """
+
+    output: list[CandidateProposal] = []
+    seen: set[bytes] = set()
+    for seed in seeds:
+        for index, refined in enumerate(refiner(fused, seed.mask, region)):
+            refined = np.asarray(refined, dtype=bool)
+            if not refined.any():
+                continue
+            if float(fused[refined].mean()) < min_support:
+                continue
+            identity = np.packbits(refined).tobytes()
+            if identity in seen:
+                continue
+            seen.add(identity)
+            measurements = proposal_measurements(
+                refined,
+                fused,
+                disagreement,
+                evidence,
+                foreground=foreground,
+                region=region,
+                sam_boundary_agreement=_boundary_iou(refined, seed.mask),
+            )
+            output.append(
+                CandidateProposal(
+                    mode=f"{prefix}_{seed.mode}_{index + 1}",
+                    mask=refined,
+                    score=_score_from_measurements(measurements),
+                    measurements=measurements,
+                    evidence_sources=tuple(item.source for item in evidence),
+                    probability=fused,
+                )
+            )
+    return output
 
 
 def proposal_from_mask(
@@ -213,7 +261,20 @@ def _append_unique(
         region=region,
         sam_boundary_agreement=sam_boundary_agreement,
     )
-    score = (
+    proposals.append(
+        CandidateProposal(
+            mode=mode,
+            mask=mask,
+            score=_score_from_measurements(measurements),
+            measurements=measurements,
+            evidence_sources=tuple(item.source for item in evidence),
+            probability=fused,
+        )
+    )
+
+
+def _score_from_measurements(measurements: dict[str, float]) -> float:
+    return float(
         0.40 * measurements["evidence_coverage"]
         + 0.22 * max(0.0, measurements["normal_contrast"])
         + 0.18 * measurements["source_agreement"]
@@ -222,16 +283,16 @@ def _append_unique(
         - 0.20 * measurements["source_disagreement"]
         - 0.10 * max(0.0, measurements["area_fraction"] - 0.20)
     )
-    proposals.append(
-        CandidateProposal(
-            mode=mode,
-            mask=mask,
-            score=float(score),
-            measurements=measurements,
-            evidence_sources=tuple(item.source for item in evidence),
-            probability=fused,
-        )
-    )
+
+
+def _append_proposal(proposals: list[CandidateProposal], seen: set[bytes], proposal: CandidateProposal) -> None:
+    if not proposal.mask.any():
+        return
+    identity = np.packbits(np.asarray(proposal.mask, dtype=bool)).tobytes()
+    if identity in seen:
+        return
+    seen.add(identity)
+    proposals.append(proposal)
 
 
 def _remove_small(mask: np.ndarray, min_area: int) -> np.ndarray:

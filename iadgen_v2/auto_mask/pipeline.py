@@ -10,7 +10,13 @@ from PIL import Image, ImageDraw
 from iadgen_v2.auto_mask.contracts import AutoMaskContext, CandidateProposal, EvidenceProvider
 from iadgen_v2.auto_mask.evidence.base import fuse_evidence_maps
 from iadgen_v2.auto_mask.mask_roles import posterior_mask_roles
-from iadgen_v2.auto_mask.proposals import SamRefiner, generate_generic_proposals, proposal_from_mask
+from iadgen_v2.auto_mask.proposals import (
+    SamRefiner,
+    generate_generic_proposals,
+    proposal_from_mask,
+    refine_proposals,
+)
+from iadgen_v2.auto_mask.refinement import EdgeAwareRefiner, edge_align_field
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector
 
 
@@ -23,6 +29,7 @@ def run_generic_evidence_pipeline(
     artifact_stem: str,
     selector: GenericCandidateSelector,
     sam_refiner: SamRefiner | None = None,
+    edge_refine: bool = True,
     min_component_area: int = 8,
     specialist_masks: dict[str, np.ndarray] | None = None,
 ) -> dict[str, Any]:
@@ -44,6 +51,17 @@ def run_generic_evidence_pipeline(
     disagreement_path = output_dir / f"{artifact_stem}_source_disagreement.png"
     _save_float_mask(fused, fused_path)
     _save_float_mask(disagreement, disagreement_path)
+    edge_refiner = None
+    edge_aligned_path: Path | None = None
+    if edge_refine:
+        try:
+            aligned = edge_align_field(Image.open(context.image_path).convert("RGB"), fused)
+            edge_refiner = EdgeAwareRefiner(aligned)
+            edge_aligned_path = output_dir / f"{artifact_stem}_edge_aligned_evidence.png"
+            _save_float_mask(aligned, edge_aligned_path)
+        except Exception as exc:  # refinement is additive; never block the pipeline
+            failures["edge_refiner"] = str(exc)
+            edge_refiner = None
     proposals = generate_generic_proposals(
         fused,
         disagreement,
@@ -52,10 +70,12 @@ def run_generic_evidence_pipeline(
         foreground=context.foreground,
         min_area=min_component_area,
         sam_refiner=sam_refiner,
+        edge_refiner=edge_refiner,
     )
+    specialist_proposals: list[CandidateProposal] = []
     for mode, mask in (specialist_masks or {}).items():
         try:
-            proposals.append(
+            specialist_proposals.append(
                 proposal_from_mask(
                     mode,
                     mask,
@@ -68,6 +88,22 @@ def run_generic_evidence_pipeline(
             )
         except ValueError:
             continue
+    proposals.extend(specialist_proposals)
+    # Edge-snap the structural specialists too, so specialist geometry benefits
+    # from the same boundary refinement as the generic candidate family.
+    if edge_refiner is not None and specialist_proposals:
+        proposals.extend(
+            refine_proposals(
+                edge_refiner,
+                specialist_proposals,
+                fused,
+                disagreement,
+                evidence,
+                foreground=context.foreground,
+                region=context.primary_region,
+                prefix="edge",
+            )
+        )
     proposals.sort(key=lambda proposal: proposal.score, reverse=True)
     decision, predictions = selector.select(proposals)
     if decision.selected_mode is None:
@@ -147,6 +183,12 @@ def run_generic_evidence_pipeline(
             "architecture": "v3-generic-evidence",
             "fused_evidence_path": str(fused_path),
             "source_disagreement_path": str(disagreement_path),
+            "edge_refinement": {
+                "enabled": bool(edge_refiner is not None),
+                "edge_aligned_evidence_path": str(edge_aligned_path) if edge_aligned_path is not None else None,
+                "edge_candidate_modes": [proposal.mode for proposal in proposals if proposal.mode.startswith("edge_")],
+                "selected_is_edge_refined": bool(selected.mode.startswith("edge_")),
+            },
             "fusion": fusion_metadata,
             "evidence": {
                 item.source: {
