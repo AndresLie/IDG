@@ -116,6 +116,9 @@ class CandidateProposal:
     evidence_sources: tuple[str, ...] = ()
     probability: np.ndarray | None = None
     artifact_path: Path | None = None
+    # Set on refined candidates (edge/sam) to the mode of the candidate they
+    # were derived from, enabling paired edge-vs-parent reliability modeling.
+    parent_mode: str | None = None
 
     def __post_init__(self) -> None:
         if self.mask.ndim != 2:

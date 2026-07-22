@@ -198,6 +198,65 @@ def test_edge_candidate_needs_margin_to_displace_non_edge() -> None:
     assert decision2.selected_mode == "edge_fused_q850_1"
 
 
+class _ColumnModel:
+    """Stub regressor returning a chosen feature column (index 0 = evidence_coverage)."""
+
+    def predict(self, features):
+        return np.asarray(features, dtype=float)[:, 0]
+
+
+class _ConstModel:
+    def __init__(self, value: float) -> None:
+        self.value = value
+
+    def predict(self, features):
+        return np.full(len(features), self.value, dtype=float)
+
+
+class _IdentityCalibrator:
+    def predict(self, values):
+        return np.asarray(values, dtype=float)
+
+
+def _paired_bundle(predicted_gain: float) -> dict:
+    return {
+        "schema_version": 1,
+        "iou_model": _ColumnModel(),
+        "precision_model": _ColumnModel(),
+        "recall_model": _ColumnModel(),
+        "iou_calibrator": _IdentityCalibrator(),
+        "conformal_residual_q90": 0.0,
+        "paired_model": _ConstModel(predicted_gain),
+        "paired_residual_q90": 0.05,
+    }
+
+
+def _edge_of(parent: CandidateProposal, coverage: float) -> CandidateProposal:
+    mask = np.zeros((16, 16), dtype=bool)
+    mask[:4, :4] = True
+    return CandidateProposal(
+        mode=f"edge_{parent.mode}_1",
+        mask=mask,
+        score=0.0,
+        measurements={"evidence_coverage": coverage, "source_agreement": coverage, "source_disagreement": 0.05, "area_fraction": 0.05},
+        parent_mode=parent.mode,
+    )
+
+
+def test_paired_model_gates_edge_by_predicted_gain() -> None:
+    non_edge = _proposal("fused_q850", coverage=0.5, agreement=0.5, area=0.05)
+    edge = _edge_of(non_edge, coverage=0.9)  # would rank higher by predicted IoU
+
+    selector = GenericCandidateSelector()
+    selector.bundle = _paired_bundle(predicted_gain=0.20)  # 0.20 - 0.05 > 0 -> eligible
+    decision, _ = selector.select([non_edge, edge])
+    assert decision.selected_mode == "edge_fused_q850_1"
+
+    selector.bundle = _paired_bundle(predicted_gain=0.02)  # 0.02 - 0.05 < 0 -> ineligible
+    decision2, _ = selector.select([non_edge, edge])
+    assert decision2.selected_mode == "fused_q850"
+
+
 def test_selector_iou_projection_is_consistent_with_precision_and_recall() -> None:
     assert _iou_from_precision_recall(0.8, 0.5) == pytest.approx(0.4444444)
     assert _iou_from_precision_recall(0.0, 0.8) == 0.0

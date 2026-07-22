@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 
 from iadgen_v2.auto_mask.contracts import CandidateProposal, SelectionDecision
-from iadgen_v2.auto_mask.proposals import MEASUREMENT_NAMES
+from iadgen_v2.auto_mask.proposals import MEASUREMENT_NAMES, paired_feature_vector
 
 
 @dataclass(frozen=True)
@@ -41,18 +41,21 @@ class GenericCandidateSelector:
             return SelectionDecision(None, None, None, None, 0.0, "needs_review", ("no_valid_proposals",)), []
         predictions = [self._predict(proposal) for proposal in proposals]
         rank_key = lambda item: (item.conformal_iou_lower_bound, item.expected_iou)
-        best = max(predictions, key=rank_key)
-        # Margin gate: an edge-refined candidate only displaces the best
-        # non-edge candidate when its uncertainty-discounted IoU clearly wins.
-        # Edge candidates are newer to the reliability model, so a near-tie
-        # should fall back to the in-distribution candidate rather than risk a
-        # confident mis-rank (observed as a zipper regression in the A/B run).
-        if best.mode.startswith("edge_"):
-            non_edge = [item for item in predictions if not item.mode.startswith("edge_")]
-            if non_edge:
-                best_non_edge = max(non_edge, key=rank_key)
-                if best.conformal_iou_lower_bound < best_non_edge.conformal_iou_lower_bound + self.edge_swap_margin:
-                    best = best_non_edge
+        by_mode = {proposal.mode: proposal for proposal in proposals}
+        non_edge = [item for item in predictions if not item.mode.startswith("edge_")]
+        best_non_edge = max(non_edge, key=rank_key) if non_edge else None
+        # An edge candidate may compete only if it earns eligibility. With a
+        # paired model, that means the conformal lower bound of its predicted
+        # IoU improvement over its own parent is positive. Without one, fall
+        # back to the (weaker) global margin gate. Ineligible edge candidates
+        # are dropped from ranking so a confident mis-rank cannot regress a
+        # category (the observed zipper failure), while the best non-edge
+        # candidate always remains as the fallback.
+        eligible = list(non_edge)
+        for item in predictions:
+            if item.mode.startswith("edge_") and self._edge_eligible(by_mode.get(item.mode), by_mode, best_non_edge, item):
+                eligible.append(item)
+        best = max(eligible, key=rank_key) if eligible else max(predictions, key=rank_key)
         if best.conformal_iou_lower_bound >= 0.45 and best.source_disagreement <= 0.20:
             disposition = "hard_mask_ok"
         elif best.expected_iou >= 0.25:
@@ -76,6 +79,32 @@ class GenericCandidateSelector:
             conformal_iou_lower_bound=best.conformal_iou_lower_bound,
             source_disagreement=best.source_disagreement,
         ), predictions
+
+    def _edge_eligible(
+        self,
+        proposal: CandidateProposal | None,
+        by_mode: dict[str, CandidateProposal],
+        best_non_edge: CandidatePrediction | None,
+        prediction: CandidatePrediction,
+    ) -> bool:
+        paired_model = self.bundle.get("paired_model") if self.bundle is not None else None
+        if paired_model is not None:
+            # Principled gate: swap only when the predicted edge-vs-parent IoU
+            # improvement, discounted by its own conformal residual, is positive.
+            if proposal is None or proposal.parent_mode is None:
+                return False
+            parent = by_mode.get(proposal.parent_mode)
+            if parent is None:
+                return False
+            features = np.asarray([paired_feature_vector(proposal.measurements, parent.measurements)], dtype=np.float32)
+            predicted_gain = float(paired_model.predict(features)[0])
+            residual = float(self.bundle.get("paired_residual_q90", 0.10))
+            return (predicted_gain - residual) > 0.0
+        # Fallback (heuristic selector or bundle without a paired model): the
+        # weaker global margin gate.
+        if best_non_edge is None:
+            return True
+        return prediction.conformal_iou_lower_bound >= best_non_edge.conformal_iou_lower_bound + self.edge_swap_margin
 
     def _predict(self, proposal: CandidateProposal) -> CandidatePrediction:
         features = np.asarray([[float(proposal.measurements.get(name, 0.0)) for name in MEASUREMENT_NAMES]], dtype=np.float32)
@@ -121,7 +150,11 @@ def _iou_from_precision_recall(precision: float, recall: float) -> float:
     return float(np.clip((precision * recall) / denominator, 0.0, 1.0))
 
 
-def fit_selector_bundle(rows: list[dict[str, Any]], output_path: Path) -> Path:
+def fit_selector_bundle(
+    rows: list[dict[str, Any]],
+    output_path: Path,
+    paired_rows: list[dict[str, Any]] | None = None,
+) -> Path:
     import joblib
     from sklearn.ensemble import HistGradientBoostingRegressor
     from sklearn.isotonic import IsotonicRegression
@@ -154,6 +187,40 @@ def fit_selector_bundle(rows: list[dict[str, Any]], output_path: Path) -> Path:
         "conformal_residual_q90": residual_q90,
         "development_categories": unique_groups.tolist(),
     }
+    _fit_paired_model(bundle, paired_rows or [])
     output_path.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(bundle, output_path)
     return output_path
+
+
+def _fit_paired_model(bundle: dict[str, Any], paired_rows: list[dict[str, Any]]) -> None:
+    """Fit the edge-vs-parent IoU-gain model with a leave-category-out conformal residual.
+
+    Predicts Delta = IoU(edge) - IoU(parent). At inference an edge candidate is
+    only eligible when predicted_gain - paired_residual_q90 > 0, giving a
+    calibrated one-sided guarantee that swapping in the edge candidate does not
+    regress against its parent.
+    """
+
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.model_selection import GroupKFold, cross_val_predict
+
+    groups = np.asarray([str(row["category"]) for row in paired_rows])
+    unique_groups = np.unique(groups)
+    # Need enough paired examples across enough categories for leave-category-out.
+    if len(paired_rows) < 50 or len(unique_groups) < 3:
+        bundle["paired_model"] = None
+        bundle["paired_residual_q90"] = None
+        bundle["paired_row_count"] = len(paired_rows)
+        return
+    features = np.asarray([row["features"] for row in paired_rows], dtype=np.float32)
+    target = np.asarray([float(row["gain"]) for row in paired_rows], dtype=np.float32)
+    splitter = GroupKFold(n_splits=len(unique_groups))
+    estimator = HistGradientBoostingRegressor(max_iter=160, max_leaf_nodes=15, learning_rate=0.06, l2_regularization=0.1, random_state=17)
+    out_of_fold = cross_val_predict(estimator, features, target, groups=groups, cv=splitter)
+    estimator.fit(features, target)
+    # One-sided residual: how much the model tends to OVER-predict the gain.
+    residual_q90 = float(np.quantile(np.maximum(0.0, out_of_fold - target), 0.90))
+    bundle["paired_model"] = estimator
+    bundle["paired_residual_q90"] = residual_q90
+    bundle["paired_row_count"] = len(paired_rows)

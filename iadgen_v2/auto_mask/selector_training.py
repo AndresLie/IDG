@@ -10,7 +10,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from iadgen_v2.auto_mask.contracts import EvidenceMap
 from iadgen_v2.auto_mask.evidence import fuse_evidence_maps, robust_probability
-from iadgen_v2.auto_mask.proposals import generate_generic_proposals
+from iadgen_v2.auto_mask.proposals import generate_generic_proposals, paired_feature_vector
 from iadgen_v2.auto_mask.refinement import EdgeAwareRefiner, edge_align_field
 from iadgen_v2.auto_mask.selection import fit_selector_bundle
 from iadgen_v2.config import AppConfig
@@ -29,6 +29,7 @@ def train_generic_selector(config: AppConfig) -> Path:
     rng = np.random.default_rng(seed)
     categories = sorted({target.category for target in config.targets})
     rows: list[dict[str, Any]] = []
+    paired_rows: list[dict[str, Any]] = []
     for category in categories:
         normal_dir = config.dataset_root / category / "train" / "good"
         paths = sorted(path for path in normal_dir.rglob("*") if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff"})[:max_normals]
@@ -57,19 +58,42 @@ def train_generic_selector(config: AppConfig) -> Path:
                     min_area=8,
                     edge_refiner=edge_refiner,
                 )
+                iou_by_mode: dict[str, float] = {}
+                measurements_by_mode: dict[str, dict[str, float]] = {}
                 for proposal in proposals:
                     intersection = int((proposal.mask & truth).sum())
                     predicted = int(proposal.mask.sum())
                     actual = int(truth.sum())
                     union = predicted + actual - intersection
+                    iou = intersection / max(1, union)
+                    iou_by_mode[proposal.mode] = iou
+                    measurements_by_mode[proposal.mode] = dict(proposal.measurements)
                     rows.append(
                         {
                             "category": category,
                             "corruption_family": family,
                             **proposal.measurements,
-                            "iou": intersection / max(1, union),
+                            "iou": iou,
                             "precision": intersection / max(1, predicted),
                             "recall": intersection / max(1, actual),
+                        }
+                    )
+                # Paired edge-vs-parent rows: how much did refining the parent
+                # actually change IoU on this known-truth corruption?
+                for proposal in proposals:
+                    if not proposal.mode.startswith("edge_") or proposal.parent_mode is None:
+                        continue
+                    if proposal.parent_mode not in iou_by_mode:
+                        continue
+                    paired_rows.append(
+                        {
+                            "category": category,
+                            "corruption_family": family,
+                            "features": paired_feature_vector(
+                                measurements_by_mode[proposal.mode],
+                                measurements_by_mode[proposal.parent_mode],
+                            ),
+                            "gain": iou_by_mode[proposal.mode] - iou_by_mode[proposal.parent_mode],
                         }
                     )
     output_dir = config.output_dir / "auto_masks" / "selector"
@@ -78,8 +102,12 @@ def train_generic_selector(config: AppConfig) -> Path:
     with rows_path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, sort_keys=True) + "\n")
+    paired_path = output_dir / "synthetic_paired_edge_rows.jsonl"
+    with paired_path.open("w", encoding="utf-8") as handle:
+        for row in paired_rows:
+            handle.write(json.dumps(row, sort_keys=True) + "\n")
     model_path = output_dir / "generic_selector.joblib"
-    fit_selector_bundle(rows, model_path)
+    fit_selector_bundle(rows, model_path, paired_rows=paired_rows)
     return model_path
 
 

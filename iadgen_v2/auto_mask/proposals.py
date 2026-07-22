@@ -142,9 +142,26 @@ def refine_proposals(
                     measurements=measurements,
                     evidence_sources=tuple(item.source for item in evidence),
                     probability=fused,
+                    parent_mode=seed.mode,
                 )
             )
     return output
+
+
+def paired_feature_vector(edge_measurements: dict[str, float], parent_measurements: dict[str, float]) -> list[float]:
+    """Features for the edge-vs-parent reliability model.
+
+    Absolute edge measurements followed by edge-minus-parent deltas, so the
+    model can reason about the refinement relative to the candidate it improves,
+    not just the edge candidate in isolation.
+    """
+
+    edge = [float(edge_measurements.get(name, 0.0)) for name in MEASUREMENT_NAMES]
+    delta = [
+        float(edge_measurements.get(name, 0.0)) - float(parent_measurements.get(name, 0.0))
+        for name in MEASUREMENT_NAMES
+    ]
+    return edge + delta
 
 
 def proposal_from_mask(
