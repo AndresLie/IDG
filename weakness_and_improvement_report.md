@@ -272,9 +272,10 @@ NON-edge candidates (inversions: `broken_large` pred 0.61/actual 0.18;
 - [ ] Selector exposes a calibrated reliability + an "unreliable prediction" flag per candidate
 
 **Tasks**
-- [ ] Diagnose the synthetic→real domain gap driving the inversions (feature drift, corruption realism)
-- [ ] Recalibrate the absolute IoU head (richer/real-defect-like corruptions and/or isotonic recalibration on held-out dev categories)
-- [ ] Rank/abstain on the conformal lower bound when direct vs precision/recall IoU disagree materially
+- [x] Diagnose the inversion: absolute model rates a broad (area 0.59, cov 0.57) SAM mask at 0.61 while compact good candidates (area 0.1–0.19, cov 0.9, actual ~0.80) get ~0.20. Root cause: synthetic training contains no broad over-segmentation candidates → model learned "bigger → higher IoU"
+- [x] ~~Inject synthetic over-segmentation negatives (dilated-truth + low-quantile broad, true low IoU)~~ **TRIED → FAILED**: mean regret 0.1808→0.2702; broke the previously-good `broken_small` (0.798→0.246). Reverted. The synthetic corruptions still don't match real candidate statistics, so more synthetic negatives don't close the gap.
+- [ ] **Next: recalibrate on dev-category REAL candidates** — fit an isotonic/quantile map from a small held-out dev-category candidate set with official-mask IoU (allowed on development categories), rather than more synthetic data
+- [ ] Consider abstention when direct vs precision/recall IoU disagree — but note the inversion is *confident* (low inconsistency), so abstention alone won't recover regret
 - [ ] Leave-category-out regret from OOF predictions as the validation signal
 
 **Acceptance / exit gate**
