@@ -1,0 +1,99 @@
+project:
+  output_dir: outputs/phase1_surface
+  report_dir: reports/phase1_surface
+
+dataset:
+  root: data/mvtec_ad
+  download: true
+  seed: 1337
+  adaptation_per_defect: 5
+  targets:
+    metal_nut:
+      - scratch
+    tile:
+      - crack
+    wood:
+      - scratch
+
+generation:
+  samples_per_category: 10
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect:
+    scratch: "a narrow realistic surface scratch on an industrial material"
+    crack: "a narrow realistic surface crack on an industrial material"
+  negative_prompt: "text, watermark, logo, square boundary, warped surface, unrealistic defect, artifacts"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: true
+    base_model: runwayml/stable-diffusion-inpainting
+    controlnet_model: lllyasviel/control_v11p_sd15_canny
+    local_files_only: true
+    dtype: float16
+    num_inference_steps: 20
+    guidance_scale: 7.5
+    strength: 0.55
+    controlnet_conditioning_scale: 0.65
+
+evaluation:
+  visibility_threshold: 0.02
+  segmentation_metrics:
+    threshold: 0.5
+
+phase2:
+  provider: heuristic
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: false
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  samples_per_category: 10
+  token_count: 16
+  feature_dim: 64
+  box_area_fraction:
+    scratch: 0.08
+    crack: 0.10
+  qwen_max_area_multiplier: 1.5
+  min_surface_coverage: 0.90
+
+phase3:
+  provider: heuristic
+  device: cpu
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: false
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  clip_token_count: 77
+  cross_attention_dim: 768
+  adapter_hidden_dim: 256
+  adapter_epochs: 5
+  denoising_epochs: 1
+  learning_rate: 0.001
+  weight_decay: 0.0
+  initial_gate_logit: -2.0
+
+phase4:
+  provider: heuristic
+  device: cpu
+  max_records: 30
+
+phase5:
+  provider: heuristic
+  device: cpu
+  image_size: 96
+  base_channels: 8
+  epochs: 5
+  learning_rate: 0.001
+  dice_loss_weight: 0.5
+  max_pos_weight: 25.0
+  threshold: 0.5
+  threshold_policy: adaptation_dice
+  held_out_per_category: 12
+  synthetic_ratios: [0.0, 0.5, 0.8]

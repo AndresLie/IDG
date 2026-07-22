@@ -1,0 +1,281 @@
+project:
+  output_dir: outputs/phase9_reliability
+  report_dir: reports/phase9_reliability
+
+dataset:
+  root: data/mvtec_ad
+  download: true
+  seed: 1337
+  adaptation_per_defect: 3
+  targets:
+    metal_nut:
+      - scratch
+    tile:
+      - crack
+    wood:
+      - scratch
+
+generation:
+  samples_per_category: 15
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect:
+    scratch: "a narrow realistic surface scratch on an industrial material"
+    crack: "a narrow realistic surface crack on an industrial material"
+  negative_prompt: "text, watermark, logo, square boundary, warped surface, unrealistic defect, artifacts"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: true
+    base_model: runwayml/stable-diffusion-inpainting
+    controlnet_model: lllyasviel/control_v11p_sd15_canny
+    local_files_only: true
+    dtype: float16
+    num_inference_steps: 18
+    guidance_scale: 7.2
+    strength: 0.55
+    controlnet_conditioning_scale: 0.65
+
+evaluation:
+  visibility_threshold: 0.02
+  segmentation_metrics:
+    threshold: 0.5
+
+auto_masks:
+  provider: qwen
+  overwrite: true
+  mask_refinement: auto
+  auto_candidate_modes:
+    - normal_anomaly
+    - nearest_normal_residual
+    - patchcore_guided
+    - soft_patch
+    - scuff_cluster
+    - multi_scuff_fusion
+    - fft_texture_suppression
+    - sam2_heatmap
+    - residual
+    - scratch_band_clean
+    - structure_tensor_ridge
+    - multi_linear
+    - pixel
+    - procedural
+  allow_neural_early_exit: false
+  scuff_soft_label_training: true
+  scuff_training_mask_variant: training_soft
+  calibrated_soft_scuff_ensemble: true
+  patchcore_guided_patch_size: 17
+  patchcore_guided_stride: 6
+  patchcore_guided_max_normals: 16
+  patchcore_guided_max_memory_patches: 4096
+  patchcore_guided_percentile: 88.0
+  patchcore_guided_close_radius: 2
+  patchcore_guided_dilate_radius: 1
+  patchcore_guided_max_components: 14
+  patchcore_guided_max_box_fraction: 0.12
+  patchcore_guided_min_contrast: 0.025
+  soft_scuff_patchcore_weight: 0.42
+  soft_scuff_nearest_residual_weight: 0.26
+  soft_scuff_fft_weight: 0.18
+  soft_scuff_normal_anomaly_weight: 0.14
+  soft_scuff_vote_weight: 0.22
+  soft_scuff_base_weight: 0.12
+  soft_scuff_possible_percentile: 72.0
+  soft_scuff_core_percentile: 92.0
+  soft_scuff_min_possible_probability: 0.22
+  soft_scuff_min_core_probability: 0.62
+  soft_scuff_possible_max_box_fraction: 0.22
+  soft_scuff_core_max_box_fraction: 0.10
+  soft_scuff_possible_floor: 96
+  fft_texture_percentile: 86.0
+  fft_texture_min_contrast: 0.04
+  fft_texture_max_box_fraction: 0.18
+  fft_texture_blend_with_scuff_seeds: true
+  multi_scuff_fusion_support_percentile: 76.0
+  multi_scuff_fusion_fine_dilate_radius: 5
+  multi_scuff_fusion_close_radius: 2
+  multi_scuff_fusion_max_components: 10
+  multi_scuff_fusion_max_box_fraction: 0.11
+  multi_scuff_fusion_grain_reject_angle_degrees: 14.0
+  write_overlays: true
+
+phase2:
+  provider: qwen
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  samples_per_category: 15
+  token_count: 16
+  feature_dim: 64
+  box_area_fraction:
+    scratch: 0.08
+    crack: 0.10
+  qwen_max_area_multiplier: 1.5
+  min_surface_coverage: 0.70
+
+phase3:
+  provider: qwen
+  device: cuda
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  token_count: 16
+  clip_token_count: 77
+  cross_attention_dim: 768
+  adapter_hidden_dim: 256
+  denoising_epochs: 10
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  initial_gate_logit: -2.0
+  adapter_token_dropout: 0.08
+  gate_regularization_weight: 0.0001
+  uncertainty_loss_weight: 0.25
+  image_size: 512
+
+phase4:
+  provider: qwen
+  device: cuda
+  variants: [qwen_mask_only, full_qwen_hybrid, fixed_mask_adapter, clone_harmonized, ip_adapter_hybrid, latent_blend_harmonized]
+  max_records: 45
+  seeds_per_record: 3
+  image_size: 512
+  clone_harmonize_strength: 0.20
+  clone_harmonize_steps: 8
+  clone_harmonize_guidance_scale: 5.0
+  ip_adapter:
+    enabled: false
+    model_id: h94/IP-Adapter
+    subfolder: models
+    weight_name: ip-adapter_sd15.bin
+    image_encoder_folder: models/image_encoder
+    scale: 0.65
+    local_files_only: true
+    fallback_to_reference_inpaint: true
+  ip_adapter_strength: 0.48
+  ip_adapter_steps: 18
+  ip_adapter_guidance_scale: 6.5
+  ip_adapter_fallback_strength: 0.18
+  ip_adapter_fallback_steps: 8
+  ip_adapter_fallback_guidance_scale: 5.0
+  latent_blend_strength: 1.0
+  latent_blend_harmonize_strength: 0.16
+  latent_blend_harmonize_steps: 8
+  latent_blend_guidance_scale: 5.0
+  min_defect_visibility_score: 0.015
+  max_background_l1: 0.05
+  max_outside_refined_change_fraction: 0.25
+  max_inpaint_area_fraction: 0.20
+  min_mask_changed_fraction: 0.30
+  diversity:
+    enabled: true
+    geometry_jitter: true
+    color_jitter: true
+    elastic_deform: true
+    brightness_jitter: 0.08
+    contrast_jitter: 0.08
+    max_rotation_degrees: 7.0
+    adapter_token_noise_std: [0.0, 0.01, 0.03]
+  quality_profiles: [scuff_soft_low_strength, scratch_ridge_balanced, scratch_thin_detail, single_stroke_clean]
+  quality_profile_filter_by_morphology: true
+  quality_profile_overrides:
+    scuff_soft_low_strength:
+      strength: 0.42
+      guidance_scale: 6.2
+      num_inference_steps: 16
+      mask_variant: inpaint_soft
+    scratch_ridge_balanced:
+      strength: 0.55
+      guidance_scale: 7.2
+      num_inference_steps: 18
+      mask_variant: inpaint_soft
+    scratch_thin_detail:
+      strength: 0.62
+      guidance_scale: 8.0
+      num_inference_steps: 22
+      mask_variant: inpaint_soft
+    single_stroke_clean:
+      strength: 0.50
+      guidance_scale: 7.0
+      num_inference_steps: 18
+      mask_variant: inpaint_soft
+
+phase5:
+  provider: qwen
+  device: cpu
+  image_size: 96
+  base_channels: 16
+  epochs: 12
+  learning_rate: 0.001
+  dice_loss_weight: 0.5
+  focal_loss_weight: 0.25
+  focal_gamma: 2.0
+  uncertainty_loss_weight: 0.25
+  positive_core_loss_weight: 2.0
+  max_pos_weight: 25.0
+  threshold: 0.5
+  threshold_policy: adaptation_dice
+  min_predicted_positive_rate: 0.001
+  max_predicted_positive_rate: 0.15
+  target_predicted_positive_rate: 0.03
+  held_out_per_category: 10
+  variants: [qwen_mask_only, full_qwen_hybrid, fixed_mask_adapter, clone_harmonized, ip_adapter_hybrid, latent_blend_harmonized]
+  synthetic_ratios: [0.0, 0.25, 0.5, 0.65]
+  class_balanced_synthetic: true
+  group_by_quality_profile: true
+  quality_profiles: [scuff_soft_low_strength, scratch_ridge_balanced, scratch_thin_detail, single_stroke_clean]
+  sd_clean_inpaint_negatives:
+    enabled: true
+    samples_per_clean: 1
+    use_same_sd_settings_as_positive: false
+  supervised_normal_negatives:
+    enabled: true
+    max_samples: 24
+  quality_filtered_training:
+    enabled: true
+    min_defect_visibility_score: 0.015
+    max_background_l1: 0.05
+    max_outside_refined_change_fraction: 0.25
+  synthetic_selector:
+    enabled: true
+    max_per_group: 24
+    group_by: [category, defect_type, morphology, variant, quality_profile]
+    min_defect_visibility_score: 0.015
+    max_background_l1: 0.05
+    max_outside_refined_change_fraction: 0.25
+    max_inpaint_area_fraction: 0.20
+    reject_quality_flags: true
+    tfidg_lite:
+      enabled: true
+      require_metrics_file: true
+      reject_missing_metrics: true
+      min_adaptive_mask_coverage_score: 0.35
+      selector_score_weight: 0.35
+    preferred_profile_bonus: 0.04
+    nonpreferred_profile_penalty: 0.03
+    preferred_profiles:
+      multi_scuff: [scuff_soft_low_strength]
+      scratch_band: [scratch_thin_detail, scratch_ridge_balanced]
+      single_stroke: [single_stroke_clean]
+      crack_band: [scratch_thin_detail, scratch_ridge_balanced]
+  repeated_seeds: [1337, 2027, 3001]
+  evaluators: [tiny_unet, patchcore_lite, patchcore_resnet]
+  patchcore_image_size: 96
+  patchcore_max_memory_patches: 5000
+  patchcore_distance_chunk_size: 512
+  patchcore_resnet_image_size: 224
+  patchcore_resnet_weights: default
+  patchcore_resnet_max_memory_patches: 10000
+  patchcore_resnet_distance_chunk_size: 128
+  human_audit:
+    enabled: true
+    max_samples: 24

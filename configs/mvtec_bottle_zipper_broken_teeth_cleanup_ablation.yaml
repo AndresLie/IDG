@@ -1,0 +1,295 @@
+project:
+  output_dir: outputs/mvtec_bottle_zipper_broken_teeth_cleanup_ablation
+  report_dir: reports/mvtec_bottle_zipper_broken_teeth_cleanup_ablation
+
+dataset:
+  root: data/mvtec_bottle_zipper_auto_mask
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    bottle:
+      - broken_large
+      - broken_small
+      - contamination
+    zipper:
+      - broken_teeth
+      - fabric_border
+      - split_teeth
+
+generation:
+  samples_per_category: 1
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect:
+    broken_large: "a large chipped or missing section on the bottle rim"
+    broken_small: "a small chipped or missing section on the bottle rim"
+    contamination: "a visible contamination spot or foreign material on the bottle"
+    broken_teeth: "one or more zipper teeth are broken or missing"
+    fabric_border: "a damaged or irregular zipper fabric border"
+    split_teeth: "zipper teeth are separated or split where they should interlock"
+  negative_prompt: "text, watermark, logo, unrealistic object deformation, artifacts"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation: {}
+
+auto_masks:
+  provider: qwen
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  overwrite: true
+  description_by_target:
+    bottle/broken_large: >-
+      Inspect only the bottle silhouette and rim. Find the large broken,
+      chipped, or missing glass section. Ignore reflections, the metal cap,
+      printed texture, and the background.
+    bottle/broken_small: >-
+      Inspect the bottle rim carefully. Find the small local chip or missing
+      glass fragment. Do not select the complete cap, normal rim highlights,
+      reflections, or the background.
+    bottle/contamination: >-
+      Find only the abnormal contamination, stain, or foreign-material patch
+      on the bottle surface. Ignore normal transparency, highlights, shadows,
+      the cap, and background texture.
+    zipper/broken_teeth: >-
+      Inspect the central zipper tooth chain. Find only the tooth or short
+      group of teeth that is broken, missing, or deformed. Ignore the regular
+      repeating teeth and surrounding fabric.
+    zipper/fabric_border: >-
+      Inspect both fabric borders beside the zipper teeth. Find only the
+      damaged, frayed, cut, or irregular border region. Do not select the
+      normal repeating teeth or ordinary woven fabric texture.
+    zipper/split_teeth: >-
+      Inspect the central zipper chain. Find the local region where the left
+      and right teeth are split, separated, or fail to interlock. Ignore
+      normal tooth repetition and intact fabric.
+  mask_refinement: auto
+  auto_candidate_modes:
+    - normal_anomaly
+    - nearest_normal_residual
+    - patchcore_guided
+    - musc_mutual_score
+    - sam_prompt_regularized
+    - soft_patch
+    - scuff_cluster
+    - multi_scuff_fusion
+    - support_constrained_fusion
+    - normal_residual_fusion
+    - repeated_chain_refiner
+    - polar_rim_residual
+    - zipper_fabric_border_layout
+    - fft_texture_suppression
+    - sam2_heatmap
+    - residual
+    - scratch_band_clean
+    - structure_tensor_ridge
+    - multi_linear
+    - pixel
+    - procedural
+  allow_neural_early_exit: false
+  use_ensemble_consensus: true
+  use_vlm_critic: false
+  ground_truth_mask_variant: eval_mvtec
+  eval_mask_variant: eval_mvtec
+  training_mask_variant: training_medium
+  scuff_soft_label_training: true
+  scuff_training_mask_variant: training_soft
+  calibrated_soft_scuff_ensemble: true
+  eval_mvtec_enabled: true
+  bottle_small_eval_mvtec_max_image_fraction: 0.08
+  bottle_small_eval_mvtec_min_core_overlap: 0.25
+  bottle_large_eval_mvtec_prior_enabled: true
+  bottle_large_eval_mvtec_heat_percentile: 70.0
+  bottle_large_eval_mvtec_dilate_radius: 7
+  bottle_large_eval_mvtec_close_radius: 4
+  bottle_large_eval_mvtec_max_box_fraction: 0.24
+  bottle_large_eval_mvtec_sector_enabled: true
+  bottle_large_eval_mvtec_sector_width_degrees: 160.0
+  bottle_large_eval_mvtec_sector_inner_radius_fraction: 0.28
+  bottle_large_eval_mvtec_sector_outer_radius_fraction: 1.02
+  bottle_large_eval_mvtec_sector_heat_support_percentile: 55.0
+  bottle_large_eval_mvtec_sector_close_size: 9
+  bottle_large_eval_mvtec_sector_erode_size: 5
+  ring_sector_eval_mvtec_prior_enabled: true
+  ring_sector_eval_mvtec_sector_enabled: true
+  ring_sector_width_degrees: 160.0
+  ring_sector_inner_radius_fraction: 0.28
+  ring_sector_outer_radius_fraction: 1.02
+  ring_sector_heat_support_percentile: 55.0
+  ring_sector_close_size: 9
+  ring_sector_erode_size: 5
+  ring_sector_heat_percentile: 70.0
+  ring_sector_dilate_radius: 7
+  ring_sector_close_radius: 4
+  ring_sector_max_box_fraction: 0.24
+  eval_tight_radius: 0
+  bottle_large_recall_expand_enabled: true
+  bottle_large_recall_expand_min_box_fraction: 0.15
+  bottle_large_recall_expand_percentile: 82.0
+  bottle_large_recall_expand_dilate_radius: 5
+  bottle_large_recall_expand_close_radius: 2
+  bottle_large_recall_expand_max_box_fraction: 0.20
+  precision_tight_eval_enabled: true
+  bottle_small_precision_max_box_fraction: 0.08
+  bottle_small_precision_max_image_fraction: 0.045
+  bottle_small_precision_min_keep_fraction: 0.45
+  zipper_tooth_precision_max_box_fraction: 0.09
+  zipper_tooth_precision_max_image_fraction: 0.038
+  zipper_tooth_precision_min_keep_fraction: 0.55
+  zipper_fabric_border_precision_max_box_fraction: 0.02
+  zipper_fabric_border_precision_max_image_fraction: 0.018
+  zipper_fabric_border_precision_min_keep_fraction: 0.55
+  zipper_structure_cleanup_enabled: true
+  zipper_tooth_structure_min_box_fraction: 0.035
+  zipper_tooth_structure_corridor_percentile: 82.0
+  zipper_tooth_structure_max_width_fraction: 0.18
+  zipper_tooth_structure_min_width_px: 8.0
+  zipper_tooth_structure_heat_percentile: 45.0
+  zipper_tooth_structure_min_keep_fraction: 0.20
+  zipper_fabric_structure_side_padding_fraction: 0.035
+  zipper_fabric_structure_min_keep_fraction: 0.45
+  zipper_fabric_layout_percentile: 90.0
+  zipper_fabric_layout_close_radius: 2
+  zipper_fabric_layout_max_components: 8
+  zipper_fabric_layout_max_image_fraction: 0.014
+  zipper_fabric_layout_side_fractions: [0.08, 0.34, 0.66, 0.94]
+  training_medium_radius: 4
+  training_wide_radius: 9
+  inpaint_variant_radius: 12
+  inpaint_variant_blur: 2.0
+  write_variant_overlays: true
+  sam_provider: auto
+  allow_heatmap_fallback: true
+  heatmap_mask_percentile: 96.0
+  sam_positive_points: 3
+  sam_negative_points: 2
+  sam2_checkpoint: model_cache/sam2/sam2.1_hiera_tiny.pt
+  sam2_model_cfg: configs/sam2.1/sam2.1_hiera_t.yaml
+  sam_device: cuda
+  normal_anomaly_percentile: 96.0
+  normal_anomaly_max_normals: 20
+  normal_anomaly_max_components: 18
+  normal_anomaly_dilate_radius: 1
+  normal_anomaly_envelope: true
+  normal_anomaly_envelope_mode: adaptive
+  normal_anomaly_envelope_radius: 5
+  normal_anomaly_envelope_percentile: 82.0
+  normal_anomaly_max_box_fraction: 0.20
+  normal_anomaly_suppress_parallel_texture: true
+  nearest_normal_residual_percentile: 87.0
+  nearest_normal_residual_max_normals: 20
+  nearest_normal_residual_search_radius: 18
+  nearest_normal_residual_search_step: 6
+  nearest_normal_residual_close_radius: 2
+  nearest_normal_residual_max_components: 14
+  nearest_normal_residual_max_box_fraction: 0.18
+  patchcore_guided_patch_size: 17
+  patchcore_guided_stride: 6
+  patchcore_guided_max_normals: 16
+  patchcore_guided_max_memory_patches: 4096
+  patchcore_guided_percentile: 88.0
+  patchcore_guided_close_radius: 2
+  patchcore_guided_dilate_radius: 1
+  patchcore_guided_max_components: 14
+  patchcore_guided_max_box_fraction: 0.18
+  patchcore_guided_min_contrast: 0.025
+  repeated_chain_patch_size: 17
+  repeated_chain_stride: 6
+  repeated_chain_max_normals: 16
+  repeated_chain_max_memory_patches: 4096
+  repeated_chain_percentile: 86.0
+  repeated_chain_corridor_width_fraction: 0.34
+  repeated_chain_max_window_height_px: 132
+  repeated_chain_min_window_height_px: 52
+  repeated_chain_close_radius: 2
+  repeated_chain_dilate_radius: 1
+  repeated_chain_max_components: 8
+  repeated_chain_max_box_fraction: 0.085
+  polar_rim_max_normals: 16
+  polar_rim_search_radius: 8
+  polar_rim_search_step: 4
+  polar_rim_angle_bins: 180
+  polar_rim_inner_radius_fraction: 0.52
+  polar_rim_outer_radius_fraction: 1.02
+  polar_rim_profile_percentile: 72.0
+  polar_rim_support_percentile: 55.0
+  polar_rim_min_sector_degrees: 10.0
+  polar_rim_max_sector_degrees: 70.0
+  polar_rim_close_radius: 2
+  polar_rim_dilate_radius: 2
+  polar_rim_max_box_fraction: 0.16
+  musc_patch_size: 17
+  musc_stride: 6
+  musc_max_normals: 16
+  musc_max_memory_patches: 4096
+  musc_knn_k: 5
+  musc_percentile: 88.0
+  musc_close_radius: 2
+  musc_dilate_radius: 1
+  musc_max_components: 14
+  musc_max_box_fraction: 0.16
+  musc_min_contrast: 0.020
+  sam_regularized_positive_points: 5
+  sam_regularized_negative_points: 4
+  sam_regularized_patchcore_patch_size: 17
+  sam_regularized_patchcore_stride: 6
+  sam_regularized_max_normals: 16
+  sam_regularized_max_memory_patches: 4096
+  sam_regularized_search_radius: 18
+  sam_regularized_search_step: 6
+  sam_regularized_fallback_percentile: 94.0
+  sam_regularized_max_box_fraction: 0.12
+  soft_patch_percentile: 93.0
+  soft_patch_close_radius: 2
+  soft_patch_max_box_fraction: 0.24
+  scuff_cluster_close_radius: 3
+  scuff_cluster_max_components: 14
+  scuff_cluster_max_box_fraction: 0.18
+  fft_texture_percentile: 86.0
+  fft_texture_min_contrast: 0.04
+  fft_texture_max_box_fraction: 0.20
+  fft_texture_blend_with_scuff_seeds: true
+  fft_peak_count: 10
+  fft_notch_radius: 3
+  fft_low_frequency_radius: 5
+  scratch_band_clean_radius: 7
+  scratch_band_clean_max_box_fraction: 0.12
+  residual_refine_percentile: 95.0
+  multi_linear_max_lines: 6
+  min_component_area: 16
+  shrink_padding_px: 6
+  min_box_area_ratio: 0.0002
+  max_box_area_ratio: 0.65
+  allow_localization_fallback: true
+  localization_fallback_mode: full_image
+  localization_policy: auto
+  bottle_large_rim_region_fraction: [0.13, 0.14, 0.90, 0.93]
+  bottle_small_rim_region_fraction: [0.20, 0.16, 0.85, 0.78]
+  bottle_rim_union_qwen: false
+  bottle_surface_region_fraction: [0.23, 0.23, 0.77, 0.77]
+  bottle_surface_union_valid_qwen: false
+  normal_guided_x_range_fraction: [0.25, 0.75]
+  normal_guided_window_height_px: 176
+  normal_guided_window_stride_px: 48
+  normal_guided_window_padding_y_px: 16
+  normal_guided_candidate_count: 6
+  normal_guided_max_selected_candidates: 3
+  normal_guided_patch_size: 17
+  normal_guided_stride: 6
+  normal_guided_max_normals: 16
+  normal_guided_max_memory_patches: 4096
+  mask_seed: 17
+  write_overlays: true
+  qwen_prompt_style: defect_localization_json
+  clip_to_surface: true

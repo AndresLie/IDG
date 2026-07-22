@@ -1,0 +1,142 @@
+project:
+  output_dir: outputs/kodytek_wood_pilot
+  report_dir: reports/kodytek_wood_pilot
+
+dataset:
+  root: data/kodytek_wood_pilot
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    kodytek_wood:
+      - crack
+      - resin
+      - knot_with_crack
+
+generation:
+  samples_per_category: 1
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect:
+    crack: "a realistic narrow natural crack in a production-line wood board"
+    resin: "a realistic resin pocket or resin streak in a production-line wood board"
+    knot_with_crack: "a realistic wood knot with a visible crack"
+  negative_prompt: "text, watermark, logo, square boundary, warped wood grain, unrealistic defect, artifacts"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation: {}
+
+auto_masks:
+  provider: qwen
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  overwrite: true
+  description_by_target:
+    kodytek_wood/crack: "a narrow natural crack disrupting the wood grain"
+    kodytek_wood/resin: "a resin pocket or elongated resin streak with different color and gloss from the wood"
+    kodytek_wood/knot_with_crack: "a wood knot containing or connected to a visible crack"
+  mask_refinement: auto
+  auto_candidate_modes:
+    - normal_anomaly
+    - nearest_normal_residual
+    - patchcore_guided
+    - soft_patch
+    - scuff_cluster
+    - multi_scuff_fusion
+    - support_constrained_fusion
+    - normal_residual_fusion
+    - fft_texture_suppression
+    - sam2_heatmap
+    - residual
+    - scratch_band_clean
+    - structure_tensor_ridge
+    - multi_linear
+    - pixel
+    - procedural
+  allow_neural_early_exit: false
+  use_ensemble_consensus: true
+  use_vlm_critic: false
+  ground_truth_mask_variant: eval_tight
+  training_mask_variant: training_medium
+  scuff_soft_label_training: true
+  scuff_training_mask_variant: training_soft
+  calibrated_soft_scuff_ensemble: true
+  eval_tight_radius: 0
+  training_medium_radius: 4
+  training_wide_radius: 9
+  inpaint_variant_radius: 12
+  inpaint_variant_blur: 2.0
+  write_variant_overlays: true
+  sam_provider: auto
+  allow_heatmap_fallback: true
+  heatmap_mask_percentile: 96.0
+  sam_positive_points: 3
+  sam_negative_points: 2
+  sam2_checkpoint: model_cache/sam2/sam2.1_hiera_tiny.pt
+  sam2_model_cfg: configs/sam2.1/sam2.1_hiera_t.yaml
+  sam_device: cuda
+  normal_anomaly_percentile: 96.0
+  normal_anomaly_max_normals: 18
+  normal_anomaly_max_components: 18
+  normal_anomaly_dilate_radius: 1
+  normal_anomaly_envelope: true
+  normal_anomaly_envelope_mode: adaptive
+  normal_anomaly_envelope_radius: 5
+  normal_anomaly_envelope_percentile: 82.0
+  normal_anomaly_max_box_fraction: 0.20
+  normal_anomaly_suppress_parallel_texture: true
+  nearest_normal_residual_percentile: 87.0
+  nearest_normal_residual_max_normals: 18
+  nearest_normal_residual_search_radius: 18
+  nearest_normal_residual_search_step: 6
+  nearest_normal_residual_close_radius: 2
+  nearest_normal_residual_max_components: 14
+  nearest_normal_residual_max_box_fraction: 0.16
+  patchcore_guided_patch_size: 17
+  patchcore_guided_stride: 6
+  patchcore_guided_max_normals: 16
+  patchcore_guided_max_memory_patches: 4096
+  patchcore_guided_percentile: 88.0
+  patchcore_guided_close_radius: 2
+  patchcore_guided_dilate_radius: 1
+  patchcore_guided_max_components: 14
+  patchcore_guided_max_box_fraction: 0.16
+  patchcore_guided_min_contrast: 0.025
+  soft_patch_percentile: 93.0
+  soft_patch_close_radius: 2
+  soft_patch_max_box_fraction: 0.24
+  scuff_cluster_close_radius: 3
+  scuff_cluster_max_components: 14
+  scuff_cluster_max_box_fraction: 0.18
+  fft_texture_percentile: 86.0
+  fft_texture_min_contrast: 0.04
+  fft_texture_max_box_fraction: 0.20
+  fft_texture_blend_with_scuff_seeds: true
+  fft_peak_count: 10
+  fft_notch_radius: 3
+  fft_low_frequency_radius: 5
+  scratch_band_clean_radius: 7
+  scratch_band_clean_max_box_fraction: 0.12
+  residual_refine_percentile: 95.0
+  multi_linear_max_lines: 6
+  min_component_area: 16
+  shrink_padding_px: 6
+  min_box_area_ratio: 0.0005
+  max_box_area_ratio: 0.8
+  allow_localization_fallback: true
+  localization_fallback_mode: full_image
+  mask_seed: 17
+  write_overlays: true
+  qwen_prompt_style: defect_localization_json
+  clip_to_surface: false

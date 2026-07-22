@@ -1,0 +1,73 @@
+{
+  "checkpoint_name": "auto_mask_generation_2026-06-07",
+  "checkpoint_date": "2026-06-07",
+  "timezone": "Asia/Taipei",
+  "workspace": "/home/p76147019/ImgGen/v2",
+  "status": "implementation_verified_final_post_gate_run_pending",
+  "version_control": {
+    "git_repository_detected": false,
+    "note": "This checkpoint uses a file snapshot and SHA-256 manifest."
+  },
+  "configuration": {
+    "phase3_uncertainty_loss_weight": 0.25,
+    "phase5_uncertainty_loss_weight": 0.25,
+    "tfidg_min_adaptive_mask_coverage_score": 0.35,
+    "tfidg_selector_score_weight": 0.35
+  },
+  "wood_mask_policy": {
+    "000.png": {
+      "selected_method": "patchcore_guided",
+      "morphology": "multi_scuff",
+      "label_policy": "soft_mask_only",
+      "training_mask_role": "training_soft",
+      "qc": "warning"
+    },
+    "001.png": {
+      "selected_method": "ensemble_consensus",
+      "morphology": "scratch_band",
+      "label_policy": "hard_mask_ok",
+      "training_mask_role": "training_medium",
+      "qc": "pass"
+    },
+    "002.png": {
+      "selected_method": "ensemble_consensus",
+      "morphology": "scratch_band",
+      "label_policy": "hard_mask_ok",
+      "training_mask_role": "training_medium",
+      "qc": "pass"
+    }
+  },
+  "verification": {
+    "focused_tests_passed": 68,
+    "focused_tests_failed": 0,
+    "mask_policy_rows_passed": 3,
+    "mask_policy_rows_total": 3
+  },
+  "tfidg_lite_diagnostic": {
+    "records_scored": 540,
+    "accepted": 74,
+    "rejected_low_mask_coverage": 466,
+    "mean_score": 0.7452,
+    "best_mean_group": "clone_harmonized:scratch_ridge_balanced",
+    "best_mean_group_score": 0.7843
+  },
+  "historical_targeted_metrics": {
+    "warning": "These results predate the final TF-IDG-lite Phase 5 selector gate.",
+    "tiny_unet_real_only": {
+      "pixel_auroc": 0.3430,
+      "aupro": 0.0518,
+      "dice": 0.0984
+    },
+    "tiny_unet_fixed_mask_adapter_ratio_025": {
+      "pixel_auroc": 0.5895,
+      "aupro": 0.0338,
+      "dice": 0.1187
+    },
+    "patchcore_lite_normal_only": {
+      "pixel_auroc": 0.7828,
+      "aupro": 0.3557,
+      "dice": 0.1761
+    }
+  },
+  "next_required_action": "Rerun Phase 11, Phase 5, and Phase 9 visual reporting with configs/phase9_reliability_targeted.yaml, then inspect the new TF-IDG-gated selector report."
+}

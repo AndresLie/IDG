@@ -1,0 +1,219 @@
+project:
+  output_dir: outputs/custom_auto_masks
+  report_dir: reports/custom_auto_masks
+
+dataset:
+  root: data/custom_mvtec
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    custom_part:
+      - scratch
+
+generation:
+  samples_per_category: 10
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect:
+    scratch: "a narrow realistic surface scratch on an industrial material"
+    crack: "a narrow realistic surface crack on an industrial material"
+  negative_prompt: "text, watermark, logo, square boundary, warped surface, unrealistic defect, artifacts"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: true
+    base_model: runwayml/stable-diffusion-inpainting
+    controlnet_model: lllyasviel/control_v11p_sd15_canny
+    local_files_only: true
+    dtype: float16
+    num_inference_steps: 8
+    guidance_scale: 7.5
+    strength: 0.55
+    controlnet_conditioning_scale: 0.65
+
+evaluation:
+  visibility_threshold: 0.02
+  segmentation_metrics:
+    threshold: 0.5
+
+auto_masks:
+  # Use legacy_specialist to reproduce the v2 behavior. Use generic_evidence
+  # for the category-agnostic v3 evidence/proposal/selection pipeline.
+  architecture: legacy_specialist
+  specialists: structural
+  provider: qwen
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  overwrite: false
+  # Keep false for research datasets whose ground_truth folder contains
+  # official masks. Generated pseudo-labels are then written under outputs/.
+  publish_dataset_ground_truth: true
+  description_by_target:
+    custom_part/scratch: "Describe the visible defect here, for example: a scratched/scuffed area with several irregular marks near the center of the part."
+    # Optional per-image overrides:
+    # custom_part/scratch:
+    #   000: "a scuffed patch with many faint scratches"
+    #   001: "one long narrow vertical scratch"
+  mask_refinement: auto
+  auto_candidate_modes: [normal_anomaly, scuff_cluster, scratch_band_clean, structure_tensor_ridge, soft_patch, sam2_heatmap, pixel, residual, multi_linear, linear, procedural]
+  ground_truth_mask_variant: eval_tight
+  training_mask_variant: training_medium
+  eval_tight_radius: 0
+  training_medium_radius: 4
+  training_wide_radius: 9
+  inpaint_variant_radius: 12
+  inpaint_variant_blur: 2.0
+  scuff_inpaint_core_radius: 5
+  scuff_inpaint_halo_radius: 14
+  scuff_inpaint_blur: 3.0
+  scuff_inpaint_core_weight: 0.65
+  scratch_band_inpaint_core_radius: 3
+  scratch_band_inpaint_halo_radius: 8
+  scratch_band_inpaint_blur: 1.8
+  scratch_band_inpaint_core_weight: 0.78
+  write_variant_overlays: true
+  sam_provider: auto
+  allow_heatmap_fallback: true
+  heatmap_mask_percentile: 96.0
+  sam_positive_points: 3
+  sam_negative_points: 2
+  # Real SAM2 settings. These point to the tiny SAM2.1 checkpoint cached by the
+  # setup/run used in this workspace; change them if you install another SAM2.
+  sam2_checkpoint: model_cache/sam2/sam2.1_hiera_tiny.pt
+  sam2_model_cfg: configs/sam2.1/sam2.1_hiera_t.yaml
+  sam_device: cuda
+  # Optional heavy research candidate. Add delta_deno to auto_candidate_modes
+  # only when you want to compare diffusion cross-attention masks.
+  delta_deno_model: runwayml/stable-diffusion-v1-5
+  delta_deno_cache_dir: model_cache/huggingface/hub
+  delta_deno_local_files_only: true
+  delta_deno_num_inference_steps: 20
+  delta_deno_strength: 0.3
+  delta_deno_guidance_scale: 7.5
+  delta_deno_min_heatmap_contrast: 0.05
+  # Optional research candidates inspired by AnomalyDINO/SuperAD. They compare
+  # defect-image patch tokens against train/good normal patch tokens, but can be
+  # too coarse for thin scratches, so they are not in auto_candidate_modes by
+  # default. Add dinov2_fusion or dinov2_memory above to compare them.
+  dinov2_model: facebook/dinov2-small
+  dinov2_cache_dir: model_cache/huggingface/hub
+  dinov2_local_files_only: true
+  dinov2_device: auto
+  dinov2_max_normals: 16
+  dinov2_memory_stride: 1
+  dinov2_fusion_dino_weight: 0.55
+  dinov2_fusion_percentile: 95.0
+  dinov2_fusion_max_components: 24
+  dinov2_fusion_envelope_radius: 5
+  dinov2_fusion_envelope_percentile: 80.0
+  dinov2_fusion_max_box_fraction: 0.22
+  dinov2_percentile: 96.0
+  dinov2_max_components: 18
+  dinov2_dilate_radius: 1
+  dinov2_envelope: true
+  dinov2_envelope_mode: adaptive
+  dinov2_envelope_radius: 5
+  dinov2_envelope_percentile: 82.0
+  dinov2_max_box_fraction: 0.18
+  dinov2_suppress_parallel_texture: true
+  dinov2_allow_fallback: true
+  pixel_refine_percentile: 93.0
+  normal_anomaly_percentile: 96.0
+  normal_anomaly_max_normals: 32
+  normal_anomaly_max_components: 18
+  normal_anomaly_dilate_radius: 1
+  normal_anomaly_envelope: true
+  normal_anomaly_envelope_mode: adaptive
+  normal_anomaly_envelope_radius: 5
+  normal_anomaly_envelope_percentile: 82.0
+  normal_anomaly_max_box_fraction: 0.18
+  normal_anomaly_suppress_parallel_texture: true
+  soft_patch_percentile: 93.0
+  soft_patch_close_radius: 2
+  soft_patch_max_box_fraction: 0.22
+  scuff_cluster_close_radius: 3
+  scuff_cluster_max_components: 14
+  scuff_cluster_max_box_fraction: 0.14
+  scuff_eval_tight_radius: 0
+  scuff_eval_tight_max_components: 8
+  scuff_eval_tight_max_box_fraction: 0.075
+  scratch_band_clean_radius: 7
+  scratch_band_clean_max_box_fraction: 0.09
+  residual_refine_percentile: 95.0
+  multi_linear_max_lines: 6
+  min_component_area: 12
+  shrink_padding_px: 6
+  min_box_area_ratio: 0.001
+  max_box_area_ratio: 0.5
+  mask_seed: 17
+  write_overlays: true
+  qwen_prompt_style: defect_localization_json
+  clip_to_surface: false
+
+phase2:
+  provider: qwen
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  samples_per_category: 10
+  token_count: 16
+  feature_dim: 64
+  box_area_fraction:
+    scratch: 0.08
+    crack: 0.10
+  qwen_max_area_multiplier: 1.5
+  min_surface_coverage: 0.50
+
+phase3:
+  provider: qwen
+  device: cuda
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  token_count: 16
+  clip_token_count: 77
+  cross_attention_dim: 768
+  adapter_hidden_dim: 256
+  denoising_epochs: 10
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  initial_gate_logit: -2.0
+  image_size: 512
+
+phase4:
+  provider: qwen
+  device: cuda
+  variants: [qwen_mask_only, full_qwen_hybrid, fixed_mask_adapter]
+  max_records: 30
+  image_size: 512
+  num_inference_steps: 8
+
+phase5:
+  provider: qwen
+  device: cpu
+  image_size: 96
+  base_channels: 16
+  epochs: 12
+  learning_rate: 0.001
+  dice_loss_weight: 0.5
+  max_pos_weight: 25.0
+  threshold: 0.5
+  threshold_policy: adaptation_dice
+  held_out_per_category: 1
+  variants: [qwen_mask_only, full_qwen_hybrid, fixed_mask_adapter]
+  synthetic_ratios: [0.0, 0.5, 0.8]

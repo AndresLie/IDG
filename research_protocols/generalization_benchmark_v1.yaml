@@ -1,0 +1,55 @@
+protocol: iadgen-v2-generalization-v1
+status: frozen-before-locked-evaluation
+
+task_tracks:
+  A: strict_zero_shot_no_target_data
+  B: training_free_few_shot_normal_references
+  C: scarce_defect_automatic_pseudo_labeling
+  D: synthetic_augmented_supervised_segmentation
+
+development_categories:
+  - bottle
+  - zipper
+  - wood
+  - metal_nut
+  - tile
+
+locked_mvtec_ad_categories:
+  - carpet
+  - cable
+  - capsule
+  - grid
+  - hazelnut
+  - leather
+  - pill
+  - screw
+  - toothbrush
+  - transistor
+
+official_mask_policy:
+  isolated_root: data/locked_official_reference_masks
+  runtime_access: forbidden
+  evaluation_access: post_generation_only
+  tuning_after_unlock: forbidden_for_current_protocol_version
+
+required_metrics:
+  - pixel_auroc
+  - pixel_ap
+  - aupro
+  - dice
+  - iou
+  - precision
+  - recall
+  - predicted_positive_rate
+  - search_region_recall
+  - abstention_coverage
+  - worst_quartile_category_performance
+
+acceptance_targets:
+  search_region_recall_macro_min: 0.90
+  auto_mask_dice_macro_min: 0.55
+  auto_mask_dice_per_category_min: 0.30
+  development_to_locked_dice_gap_max: 0.10
+  accepted_mask_coverage_min: 0.75
+  synthetic_macro_aupro_or_pixel_ap_gain_min: 0.02
+  trainable_evaluator_seeds: 5

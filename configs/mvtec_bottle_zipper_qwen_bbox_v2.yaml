@@ -1,0 +1,109 @@
+project:
+  output_dir: outputs/mvtec_bottle_zipper_qwen_bbox_v2
+  report_dir: reports/mvtec_bottle_zipper_qwen_bbox_v2
+
+dataset:
+  root: data/mvtec_bottle_zipper_auto_mask
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    bottle:
+      - broken_large
+      - broken_small
+      - contamination
+    zipper:
+      - broken_teeth
+      - fabric_border
+      - split_teeth
+
+generation:
+  samples_per_category: 1
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect:
+    broken_large: "a large chipped or missing section on the bottle rim"
+    broken_small: "a small chipped or missing section on the bottle rim"
+    contamination: "a visible contamination spot or foreign material on the bottle"
+    broken_teeth: "one or more zipper teeth are broken or missing"
+    fabric_border: "a damaged or irregular zipper fabric border"
+    split_teeth: "zipper teeth are separated or split where they should interlock"
+  negative_prompt: "text, watermark, logo, unrealistic object deformation, artifacts"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation: {}
+
+auto_masks:
+  provider: qwen
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  token_count: 16
+  qwen_prompt_style: defect_localization_json_v2
+  qwen_fuse_sub_boxes: true
+  qwen_sub_boxes_primary: true
+  qwen_sub_box_padding: 0.05
+  qwen_spatial_grid_rescue: true
+  qwen_spatial_grid_targets:
+    - zipper/broken_teeth
+    - zipper/split_teeth
+  qwen_spatial_grid_step_px: 64
+  qwen_spatial_grid_min_area_ratio: 0.00001
+  qwen_spatial_grid_max_height_fraction: 0.35
+  localization_policy: auto
+  bottle_large_rim_region_fraction: [0.13, 0.14, 0.90, 0.93]
+  bottle_small_rim_region_fraction: [0.20, 0.16, 0.85, 0.78]
+  bottle_rim_union_qwen: false
+  bottle_surface_region_fraction: [0.23, 0.23, 0.77, 0.77]
+  bottle_surface_union_valid_qwen: false
+  normal_guided_x_range_fraction: [0.25, 0.75]
+  normal_guided_window_height_px: 176
+  normal_guided_window_stride_px: 48
+  normal_guided_window_padding_y_px: 16
+  normal_guided_candidate_count: 6
+  normal_guided_max_selected_candidates: 3
+  normal_guided_patch_size: 17
+  normal_guided_stride: 6
+  normal_guided_max_normals: 16
+  normal_guided_max_memory_patches: 4096
+  min_box_area_ratio: 0.0002
+  max_box_area_ratio: 0.65
+  min_sub_box_area_ratio: 0.00005
+  max_sub_box_area_ratio: 0.18
+  allow_localization_fallback: true
+  localization_fallback_mode: full_image
+  description_by_target:
+    bottle/broken_large: >-
+      Inspect only the bottle silhouette and rim. Find the large broken,
+      chipped, or missing glass section. Ignore reflections, the metal cap,
+      printed texture, and the background.
+    bottle/broken_small: >-
+      Inspect the bottle rim carefully. Find the small local chip or missing
+      glass fragment. Do not select the complete cap, normal rim highlights,
+      reflections, or the background.
+    bottle/contamination: >-
+      Find only the abnormal contamination, stain, or foreign-material patch
+      on the bottle surface. Ignore normal transparency, highlights, shadows,
+      the cap, and background texture.
+    zipper/broken_teeth: >-
+      Inspect the central zipper tooth chain. Find only the tooth or short
+      group of teeth that is broken, missing, or deformed. Ignore the regular
+      repeating teeth and surrounding fabric.
+    zipper/fabric_border: >-
+      Inspect both fabric borders beside the zipper teeth. Find only the
+      damaged, frayed, cut, or irregular border region. Do not select the
+      normal repeating teeth or ordinary woven fabric texture.
+    zipper/split_teeth: >-
+      Inspect the central zipper chain. Find the local region where the left
+      and right teeth are split, separated, or fail to interlock. Ignore
+      normal tooth repetition and intact fabric.

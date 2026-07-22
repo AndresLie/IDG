@@ -1,0 +1,9 @@
+.conda/
+.pytest_cache/
+*.egg-info/
+__pycache__/
+.cache/
+model_cache/
+data/
+outputs/
+reports/
