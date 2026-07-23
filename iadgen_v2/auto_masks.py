@@ -321,16 +321,14 @@ def run_auto_masks(config: AppConfig) -> Path:
                 # split/broken-teeth samples without touching the correctly
                 # localized ones. Low-repetition objects (e.g. bottle) keep the
                 # narrow box, where fencing aids precision.
-                # Default OFF: validated to recover the oracle ceiling on
-                # repeated structures (zipper oracle 0.4565->0.5750; dead
-                # split/broken-teeth 0.0->0.43-0.66) but it REGRESSES selected
-                # Dice (zipper 0.2614->0.1906) because the miscalibrated selector
-                # mis-picks among the widened pool (fabric_border collapses).
-                # So it is gated behind A-S1b selector recalibration: enable
-                # widen_on_repeated_texture once the selector can rank the
-                # enriched pool. Prefer widening to the periodic extent rather
-                # than the full image when re-enabling.
-                widen_enabled = bool(generic_ev.get("widen_on_repeated_texture", False))
+                # Default ON since the real-candidate recalibrated selector
+                # (A-S1b) shipped: with that selector, widening the region on
+                # strongly repeated structures raises zipper selected Dice
+                # 0.3083->0.3823 (bottle unaffected; trigger does not fire).
+                # It was OFF while the synthetic selector was deployed because
+                # it mis-ranked the widened pool (zipper 0.2614->0.1906); that
+                # condition no longer holds. Validated on development categories.
+                widen_enabled = bool(generic_ev.get("widen_on_repeated_texture", True))
                 widen_threshold = float(generic_ev.get("localization_widen_repeated_texture", 0.17))
                 repeated_texture = _repeated_texture_score(image)
                 if widen_enabled and float(repeated_texture) >= widen_threshold:

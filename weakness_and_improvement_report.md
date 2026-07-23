@@ -317,24 +317,21 @@ selection boost; 1b is the only route to the ~0.22 selected-vs-oracle headroom.
 - [ ] Mean selection regret `≤ 0.10`; `broken_large`/`broken_teeth` regret `< 0.20`
 - [ ] Expected-IoU calibration MAE `≤ 0.15`; leave-category-out regret `≤ 0.05`
 
-#### 🚧 A-S2 · Restore proposal recall for split-tooth defects  *(fixes A2; root cause found, fix validated but selector-gated)*
-> **Diagnosis (not what the sprint assumed):** the oracle-zero cases are **not**
-> missing periodicity proposals inside a good region — they are **confidently
-> wrong Qwen localization** (`qwen_region_recall = 0`, `loc_status = valid`) whose
-> box the soft spatial prior then **fences to**, suppressing the true defect. The
-> contrast: the *fallback* (full-image) sample got oracle 0.60 while the
-> confident-wrong ones got 0.0. A confident-wrong box is worse than no box.
+#### ✅ A-S2 · Restore proposal recall for repeated-structure defects  *(fixes A2; VALIDATED, enabled after A-S1b)*
+> **Diagnosis:** the oracle-zero cases are **confidently wrong Qwen localization**
+> (`qwen_region_recall = 0`, `loc_status = valid`) whose box the soft prior fences
+> to, suppressing the true defect (the *fallback*/full-image sample scored oracle
+> 0.60 vs 0.0 for confident-wrong). A confident-wrong box is worse than no box.
 >
-> **Fix built + validated (default OFF):** a measured, category-agnostic trigger
-> (`widen_on_repeated_texture`; repeated-texture ≥ 0.17 — bottle ≤ 0.113 vs zipper
-> ≥ 0.227, wide margin) widens to the full image so evidence is not fenced.
-> Result on the 18-image cohort: **zipper oracle 0.4565 → 0.5750** (dead samples
-> `broken_teeth/001` 0→0.658, `split_teeth/000` 0→0.429), **bottle untouched**.
-> **But selected Dice regressed** (zipper 0.2614 → 0.1906): the widened pool feeds
-> the miscalibrated selector broad candidates it mis-ranks (`fabric_border`
-> collapses). So A-S2's candidate-recall fix works, but its output payoff is
-> **gated behind A-S1b** (selector recalibration) — enable the flag once the
-> selector can rank the enriched pool.
+> **Fix:** a measured, category-agnostic trigger (`widen_on_repeated_texture`;
+> repeated-texture ≥ 0.17 — bottle ≤0.11 vs zipper ≥0.23) widens to full image so
+> evidence is not fenced. Recovers zipper oracle 0.4565→0.5750 (dead samples
+> `broken_teeth/001` 0→0.658, `split_teeth/000` 0→0.429); bottle untouched.
+>
+> **Gate resolved by A-S1b:** with the *synthetic* selector it regressed selected
+> Dice (zipper 0.2614→0.1906); with the deployed **real-recalibrated** selector it
+> now **improves** it (zipper 0.3083→0.3823, bottle unchanged). Enabled by default.
+> Combined A-S1b + A-S2: zipper selected Dice **0.2614 → 0.3823 (+0.121)**.
 
 **Tasks**
 - [x] Diagnose where signal is lost → localization fencing (confident-wrong Qwen + soft prior), not thresholding/filtering
