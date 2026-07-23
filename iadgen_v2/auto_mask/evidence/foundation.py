@@ -453,3 +453,100 @@ def _appearance_residual(target: np.ndarray, normal: np.ndarray) -> np.ndarray:
     gradient = np.abs(target_gradient - normal_gradient)
     gradient /= max(1e-6, float(np.percentile(gradient, 99.0)))
     return np.clip(0.65 * intensity + 0.35 * gradient, 0.0, 1.0).astype(np.float32)
+
+
+@dataclass
+class SubspacePcaDinoProvider:
+    """SubspaceAD-style evidence (arXiv 2602.23013): fit a PCA subspace to normal
+    DINOv2 patch features and score test patches by reconstruction residual.
+
+    Training-free, no memory bank; reuses the shared in-process normal-token
+    cache. Complements the nearest-neighbour DINO provider — anomalies show up
+    as variance orthogonal to the normal subspace rather than distance to a
+    stored patch.
+    """
+
+    name: str = "dinov2_subspace"
+    model_id: str = "facebook/dinov2-small"
+    cache_dir: str | None = None
+    device: str = "auto"
+    scale: int = 448
+    layers: tuple[int, ...] = (-4, -1)
+    max_normals: int = 16
+    variance: float = 0.9
+    calibration_normals: int = 3
+    artifact_dir: Path | None = None
+
+    def compute(self, context: AutoMaskContext) -> EvidenceMap:
+        processor, model, device = _load_model(self.model_id, self.cache_dir, self.device)
+        image = Image.open(context.image_path).convert("RGB")
+        target, grid = _tokens(processor, model, device, image, self.scale, self.layers)
+        normal_tokens = [
+            self._normal_tokens(processor, model, device, Path(path), self.scale)
+            for path in context.normal_paths[: self.max_normals]
+        ]
+        if not normal_tokens:
+            raise ValueError("PCA subspace evidence requires normal references")
+        residual = self._reconstruction_residual(np.concatenate(normal_tokens, axis=0), target)
+        raw = _resize_map(residual.reshape(grid), grid, context.image_size)
+        calibration = self._loo_calibration(normal_tokens)
+        probability, used = robust_probability(raw, calibration)
+        probability = apply_soft_spatial_prior(probability, context.semantic_regions)
+        normal_factor = min(1.0, len(context.normal_paths) / 4.0)
+        nondegenerate = float(np.std(probability) >= 0.01)
+        reliability = float(np.clip(0.40 + 0.35 * normal_factor + 0.25 * nondegenerate, 0.05, 1.0))
+        return EvidenceMap(
+            source=self.name,
+            values=probability,
+            reliability=reliability,
+            calibration=used,
+            augmentation_consistency=0.75,
+            metadata={
+                "scale": int(self.scale),
+                "layers": list(self.layers),
+                "pca_variance": self.variance,
+                "normals_used": len(normal_tokens),
+                "calibration_source": "leave_one_normal_out" if len(normal_tokens) >= 2 else "target_fallback",
+            },
+        )
+
+    def _fit(self, feats: np.ndarray):
+        from sklearn.decomposition import PCA
+
+        variance = self.variance
+        if not (0.0 < variance < 1.0):
+            variance = min(int(variance), min(feats.shape) - 1) if variance >= 1 else 0.9
+        pca = PCA(n_components=variance, svd_solver="full")
+        pca.fit(np.asarray(feats, dtype=np.float32))
+        return pca
+
+    def _reconstruction_residual(self, normal_feats: np.ndarray, target: np.ndarray) -> np.ndarray:
+        pca = self._fit(normal_feats)
+        recon = pca.inverse_transform(pca.transform(np.asarray(target, dtype=np.float32)))
+        return np.linalg.norm(target - recon, axis=1).astype(np.float32)
+
+    def _loo_calibration(self, normal_tokens: list[np.ndarray]) -> dict[str, float] | None:
+        if len(normal_tokens) < 2:
+            return None
+        samples: list[np.ndarray] = []
+        for index in range(min(self.calibration_normals, len(normal_tokens))):
+            others = np.concatenate([t for j, t in enumerate(normal_tokens) if j != index], axis=0)
+            pca = self._fit(others)
+            held = normal_tokens[index]
+            recon = pca.inverse_transform(pca.transform(held))
+            samples.append(np.linalg.norm(held - recon, axis=1))
+        values = np.concatenate(samples)
+        median = float(np.median(values))
+        return {"median": median, "mad": max(1e-6, float(np.median(np.abs(values - median))))}
+
+    def _normal_tokens(self, processor: Any, model: Any, device: Any, path: Path, scale: int) -> np.ndarray:
+        # Share MultiScaleDinoProvider's in-process token cache (identical key).
+        stat = path.stat()
+        mem_key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns, self.model_id, tuple(self.layers), int(scale))
+        cached = _NORMAL_TOKEN_CACHE.get(mem_key)
+        if cached is not None:
+            return cached
+        normal = Image.open(path).convert("RGB")
+        values, _ = _tokens(processor, model, device, normal, scale, self.layers)
+        _NORMAL_TOKEN_CACHE[mem_key] = values
+        return values

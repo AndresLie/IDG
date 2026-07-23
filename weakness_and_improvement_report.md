@@ -112,6 +112,30 @@ The formal `freeze-architecture` release will be issued only when the mask gate
 passes or after the locked-category evaluation — whichever the project chooses;
 it must not be forced by lowering the gate.
 
+## 1b. Post-freeze evidence exploration — SubspaceAD PCA residual (2026-07-23)
+
+Grounded in arXiv **2602.23013 (SubspaceAD)**: fit a PCA subspace to normal
+DINOv2 patch features, score test patches by reconstruction residual orthogonal
+to that subspace. Implemented as `SubspacePcaDinoProvider` (reuses the cached
+DINO tokens; default off via `generic_evidence.pca_subspace_enabled`).
+
+A/B on the pilot (added to the fused evidence stack, deployed selector + widening):
+
+| | oracle | selected Dice | regret |
+| --- | ---: | ---: | ---: |
+| zipper | 0.5750 → 0.5884 | **0.3832 → 0.5290 (+0.146)** | 0.192 → 0.059 |
+| bottle | 0.7630 → 0.7591 | 0.5615 → 0.5318 (−0.030) | 0.202 → 0.227 |
+| macro selected | — | **0.4724 → 0.5304 (+0.058)** | — |
+
+Large win on the repeated structure (zipper), small regression on the
+non-periodic object (bottle). **Kept default-off** (fails the no-collateral bar
+for a default flip). **Next refinement:** gate PCA-subspace evidence by the same
+measured repeated-texture trigger as the widening (≥0.17) — apply where it wins,
+skip where it hurts — to bank the zipper gain without the bottle cost. Other
+grounded levers pulled from arXiv, mapped to measured gaps: HyperFSAD sparse
+hyper-matching (distractor suppression), UniVAD component clustering (localization
+without a Qwen box), FADE CLIP prompts (the missing vision-language cue).
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.

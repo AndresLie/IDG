@@ -15,7 +15,12 @@ import skimage.filters
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageMath
 
 from iadgen_v2.auto_mask.contracts import AutoMaskContext, DEFAULT_AUTO_CANDIDATE_MODES, AutoMaskRecord, PatchFeatureCache
-from iadgen_v2.auto_mask.evidence import FunctionalEvidenceProvider, MultiScaleDinoProvider, RegisteredDinoResidualProvider
+from iadgen_v2.auto_mask.evidence import (
+    FunctionalEvidenceProvider,
+    MultiScaleDinoProvider,
+    RegisteredDinoResidualProvider,
+    SubspacePcaDinoProvider,
+)
 from iadgen_v2.auto_mask.pipeline import run_generic_evidence_pipeline
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector
 from iadgen_v2.auto_mask.specialists import specialist_applicability
@@ -10408,6 +10413,19 @@ def _run_generic_mask_artifacts(
                 max_normals=int(generic.get("max_normals", 16)),
                 memory_stride=int(generic.get("dinov2_memory_stride", 1)),
                 artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "dinov2_multiscale",
+            )
+        )
+    if bool(generic.get("pca_subspace_enabled", False)):
+        providers.append(
+            SubspacePcaDinoProvider(
+                model_id=str(auto.get("dinov2_model", "facebook/dinov2-small")),
+                cache_dir=auto.get("dinov2_cache_dir"),
+                device=str(auto.get("dinov2_device", "auto")),
+                scale=int(generic.get("dinov2_scales", [448])[0]),
+                layers=tuple(int(value) for value in generic.get("dinov2_layers", [-4, -1])),
+                max_normals=int(generic.get("max_normals", 16)),
+                variance=float(generic.get("pca_subspace_variance", 0.9)),
+                artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "dinov2_subspace",
             )
         )
     if bool(generic.get("registered_residual_enabled", True)):

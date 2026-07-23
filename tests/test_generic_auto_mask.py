@@ -488,3 +488,25 @@ def _config(tmp_path: Path, *, targets: str, development: str, locked: str) -> P
         encoding="utf-8",
     )
     return path
+
+
+def test_subspace_pca_residual_flags_off_subspace_patches() -> None:
+    from iadgen_v2.auto_mask.evidence.foundation import SubspacePcaDinoProvider
+
+    rng = np.random.default_rng(0)
+    # normal patches lie in a 3D subspace of a 16D space; anomalies get an
+    # orthogonal off-subspace component -> large reconstruction residual.
+    basis = np.linalg.qr(rng.standard_normal((16, 3)))[0]
+    def normal_block(n):
+        return (rng.standard_normal((n, 3)) @ basis.T).astype(np.float32)
+    normals = [normal_block(64) for _ in range(4)]
+    target = normal_block(50)
+    off = target.copy()
+    off[:10] += 5.0 * rng.standard_normal((10, 16)).astype(np.float32)  # off-subspace anomalies
+
+    prov = SubspacePcaDinoProvider(variance=0.95)
+    res_clean = prov._reconstruction_residual(np.concatenate(normals), target)
+    res_anom = prov._reconstruction_residual(np.concatenate(normals), off)
+    # the injected off-subspace patches must have far larger residual than clean ones
+    assert res_anom[:10].mean() > res_clean.mean() + 1.0
+    assert res_anom[10:].mean() < res_anom[:10].mean()
