@@ -263,10 +263,23 @@ absolute selector (see A-S1b).
 - [ ] Mean selection regret `0.1808 → ≤ 0.10` — **NOT met (still ~0.20–0.25)**; dominated by absolute-selector mis-ranking → moved to A-S1b
 - [ ] Expected-IoU calibration MAE `≤ 0.15` on development data → A-S1b
 
-#### ⬜ A-S1b · Fix absolute selector calibration  *(fixes A1 — dominant half)*
+#### 🚧 A-S1b · Fix absolute selector calibration  *(fixes A1 — dominant half; BLOCKED on a real-candidate calibration set)*
 Revealed by A-S1: regret is dominated by the absolute IoU model mis-ranking
 NON-edge candidates (inversions: `broken_large` pred 0.61/actual 0.18;
 `broken_small` pred 0.07/actual 0.66). The edge gate cannot touch this.
+**Status:** the synthetic route is a proven **negative result** (over-seg
+augmentation raised regret 0.1808→0.2702 and broke `broken_small`; reverted).
+Blocked on acquiring a dev-category real-candidate calibration set. Next useful
+work is **setup + data acquisition first**, then build the recalibration harness
+and run it **together** — do not land harness code without the data to validate
+it.
+
+**Firewall contract (must hold for the calibration set — do not violate):**
+- [ ] Generate candidates **without** official masks (masks touched only after generation).
+- [ ] Use **development** official masks only afterward to compute IoU labels.
+- [ ] Train and evaluate with **leave-category-out** splits.
+- [ ] Record candidate / config / model hashes for every calibration artifact.
+- [ ] **Never** inspect or tune against locked-category masks.
 
 **Contract**
 - [ ] Selector exposes a calibrated reliability + an "unreliable prediction" flag per candidate
@@ -379,7 +392,12 @@ threshold) needs an SD re-audit run.
 - [ ] Preregister morphology-specific bands from real-defect reference patches and labeled fixtures
 - [ ] SD re-audit: set `target_defect_visibility` / `min_defect_visibility_score`, regenerate, two-reviewer blind check
 
-**Acceptance / exit gate** — pending the SD re-audit (mechanism is in place, gate defaults off)
+**Status: 🚧 BLOCKED on the pinned SD1.5 cache.** The empirical re-audit needs
+SD1.5 inpainting weights available offline; `phase3-train` fails with
+`LocalEntryNotFoundError` (network disabled). Mechanism + config plumbing are in
+place and the gate defaults off, so nothing regresses. Resume when SD1.5 is
+cached: run the two configs (baseline vs `target_defect_visibility` on) through
+prepare→phase2→phase3→phase4 and compare visibility + blind review.
 
 **Acceptance / exit gate**
 - [ ] Mean visibility improves by `≥ 0.020` over the frozen 0.0551 baseline, with a morphology-stratified 95% bootstrap CI excluding zero
@@ -419,8 +437,12 @@ Conditional parallelism: freeze and hash the Track-A mask artifact consumed by
 Track B. If masks must change, rerun affected Track-B stages after Track A
 stabilizes.
 
-1. [~] **A-S1** edge-baseline gate done (`792b4e3`); **A-S1b** absolute-selector calibration is the open regret lever
-2. [~] **B-S1** critic term done (`c4ccc37`); Phase-4 visibility controller + re-audit is the open half
+Both dominant levers are now **blocked on data/environment, not code** — the
+correct next work is setup + data acquisition, then build each harness and run
+it **together** (avoid another "implemented but not demonstrated" landing).
+
+1. [~] **A-S1** edge-baseline gate done (`792b4e3`); **A-S1b** 🚧 blocked — synthetic route failed (negative result); needs a dev-category real-candidate calibration set
+2. [~] **B-S1** critic + controller done (`c4ccc37`, `36a6afd`); 🚧 empirical re-audit blocked on the pinned SD1.5 cache
 3. [ ] **A-S2** split-tooth proposal recall
 4. [ ] **A-S3 / A-S4** over-segmentation control + actionable QC
 5. [~] **A-S5** A7 cache/device hardening done (`70c5150`); MuSc caching (A6) open
