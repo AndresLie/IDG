@@ -55,6 +55,63 @@ content-hashed mask manifest; otherwise sequence Track B after Track A stabilize
 
 ---
 
+## 1a. Validated baseline and freeze (2026-07-23)
+
+Sprint outcome: two stacking, leave-category-out-validated mask/selector gains
+(A-S1b real-candidate selector recalibration + A-S2 repeated-structure widening),
+deployed. The widened-pool refit passed a **predeclared** keep/discard gate
+(LCO macro Dice +0.084, regret −0.084, no category regression, calibration MAE
+not worse, coverage up) and is kept and deployed.
+
+**Three figures kept strictly separate (do not conflate):**
+
+| Figure | macro Dice | Meaning |
+| --- | ---: | --- |
+| Full-dev-trained **diagnostic** | `0.4723` | deployed selector scored on categories inside its own training — in-distribution, NOT generalization |
+| **Leave-category-out estimate** | `0.5088` | defensible: train on 3 dev categories, evaluate on 2 held out; the honest generalization number |
+| **Locked-category result** | not measured | the real test; blocked (see below) |
+
+Baseline for reference: pre-A-S1b synthetic selector `0.3885`. The widened refit
+*raised* the LCO estimate while *lowering* the in-distribution diagnostic
+(0.5014→0.4723) — less overfitting, healthier generalization.
+
+**Caveats:** all development-category, n=18 pilot, light-evidence config. These
+are pseudo-label mask-quality gains; they do **not** touch the downstream
+synthetic-utility (Track B) claim, which remains dominated by the normal-only
+PatchCore baseline.
+
+**Confirmed blockers — the scientifically decisive remaining work:**
+- **Locked-category generalization (X1):** the 10 untouched MVTec categories are
+  not present and the environment has no network. This is the real generalization
+  test and cannot run here.
+- **Downstream synthetic utility (B-S1 re-audit):** SD1.5 inpainting weights are
+  not cached offline.
+
+Development-category mask tuning is **stopped**; further minor refinements are
+not the priority.
+
+**Freeze status — hashes sealed; formal release-freeze correctly gate-blocked.**
+`freeze-architecture` intentionally refuses because it requires a *passing*
+development mask gate (macro Dice ≥ 0.55, worst-category ≥ 0.30, search-recall
+≥ 0.90, accepted coverage ≥ 0.75, regret ≤ 0.05), and the current deployed masks
+(macro ≈ 0.47–0.51 diagnostic / 0.51 LCO) are **below that release bar** — the
+governance firewall working as designed, not a bug. So this is a *validated
+checkpoint*, not a release-grade freeze. Reproducibility hashes are sealed via
+the experiment manifest (`configs/v3_generic_evidence_frozen.yaml`,
+`outputs/v3_generic_evidence_frozen/experiment_manifests/`):
+
+```
+architecture_core_fingerprint: c64a9830a2afffb5d3203bf122d1da97
+config effective_fingerprint:  b8157e80833df6eb5eb2e2d113fc3b6c
+code content_fingerprint:      23040dae26156b686e3e909c83c3661
+dataset inventory_fingerprint: 403e039e6c894f7d3209463beb0a7ea4 (5 dev categories, 2120 files)
+models_fingerprint:            277df7fc96a381206919722af4a9aa6a
+```
+
+The formal `freeze-architecture` release will be issued only when the mask gate
+passes or after the locked-category evaluation — whichever the project chooses;
+it must not be forced by lowering the gate.
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.
