@@ -274,6 +274,15 @@ work is **setup + data acquisition first**, then build the recalibration harness
 and run it **together** — do not land harness code without the data to validate
 it.
 
+**Also ruled out — heuristic-swap shortcut (experiment 1a):** on the identical
+candidate pool, disabling the learned bundle (→ hand-designed heuristic) is far
+*worse*, not better: Dice 0.3885→0.1869, regret 0.221→0.423, recall 0.576→0.207,
+worse on 11/18 samples (pools verified identical, oracle Δ=0). So despite its
+poor point-calibration (Pearson 0.086 on selected samples), the learned selector
+**ranks meaningfully better than the heuristic and is net-positive** — it must be
+*improved* via real-data recalibration, not replaced. There is no free
+selection boost; 1b is the only route to the ~0.22 selected-vs-oracle headroom.
+
 **Firewall contract (must hold for the calibration set — do not violate):**
 - [ ] Generate candidates **without** official masks (masks touched only after generation).
 - [ ] Use **development** official masks only afterward to compute IoU labels.
