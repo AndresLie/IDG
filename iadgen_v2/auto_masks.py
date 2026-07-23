@@ -309,14 +309,47 @@ def run_auto_masks(config: AppConfig) -> Path:
                 localization["bottle_surface_guided"] = bottle_localization
             requested_refinement = str(auto.get("mask_refinement", "auto"))
             if architecture == "generic_evidence":
+                generic_ev = auto.get("generic_evidence", {}) if isinstance(auto.get("generic_evidence"), dict) else {}
+                generic_region = region
+                generic_semantic = [region, *valid_sub_boxes]
+                # A-S2 localization reliability: on strongly repeated structures
+                # (measured, category-agnostic) Qwen tends to localize the wrong
+                # repeat with high confidence, and the soft spatial prior then
+                # suppresses the true defect. When repetition is high, widen to
+                # the full image so evidence is not fenced to a wrong box.
+                # Verified: recovers oracle 0.0 -> 0.43-0.66 on the dead
+                # split/broken-teeth samples without touching the correctly
+                # localized ones. Low-repetition objects (e.g. bottle) keep the
+                # narrow box, where fencing aids precision.
+                # Default OFF: validated to recover the oracle ceiling on
+                # repeated structures (zipper oracle 0.4565->0.5750; dead
+                # split/broken-teeth 0.0->0.43-0.66) but it REGRESSES selected
+                # Dice (zipper 0.2614->0.1906) because the miscalibrated selector
+                # mis-picks among the widened pool (fabric_border collapses).
+                # So it is gated behind A-S1b selector recalibration: enable
+                # widen_on_repeated_texture once the selector can rank the
+                # enriched pool. Prefer widening to the periodic extent rather
+                # than the full image when re-enabling.
+                widen_enabled = bool(generic_ev.get("widen_on_repeated_texture", False))
+                widen_threshold = float(generic_ev.get("localization_widen_repeated_texture", 0.17))
+                repeated_texture = _repeated_texture_score(image)
+                if widen_enabled and float(repeated_texture) >= widen_threshold:
+                    full_region = (0, 0, image.width, image.height)
+                    generic_region = full_region
+                    generic_semantic = [full_region]
+                    localization["repeated_structure_widening"] = {
+                        "applied": True,
+                        "repeated_texture_score": round(float(repeated_texture), 4),
+                        "threshold": widen_threshold,
+                    }
                 mask_artifacts = _run_generic_mask_artifacts(
                     config=config,
                     auto=auto,
                     image=image,
                     image_path=image_path,
                     normal_paths=normal_index.get(category, []),
-                    region=region,
-                    semantic_regions=[region, *valid_sub_boxes],
+                    region=generic_region,
+                    semantic_regions=generic_semantic,
                     output_dir=run_output_dir / "masks" / category / defect_type,
                     variant_dir=run_output_dir / "mask_variants" / category / defect_type,
                     artifact_stem=artifact_stem,
@@ -10891,6 +10924,9 @@ def _write_contact_sheet(path: Path, rows: list[AutoMaskRecord]) -> None:
 def _write_candidate_comparison_sheet(path: Path, rows: list[AutoMaskRecord]) -> None:
     if not rows:
         return
+    if any(str(row.settings.get("auto_mask_architecture", "")).startswith("generic_evidence") for row in rows):
+        _write_generic_candidate_comparison_sheet(path, rows)
+        return
     candidate_order = [
         "selected",
         "normal_anomaly",
@@ -10933,6 +10969,67 @@ def _write_candidate_comparison_sheet(path: Path, rows: list[AutoMaskRecord]) ->
             draw.text((x + 4, y + 4), label, fill="black")
     path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(path)
+
+
+def _write_generic_candidate_comparison_sheet(path: Path, rows: list[AutoMaskRecord]) -> None:
+    thumb_w, thumb_h, label_h = 220, 220, 40
+    column_count = 6
+    sheet = Image.new("RGB", (thumb_w * column_count, (thumb_h + label_h) * len(rows)), "white")
+    draw = ImageDraw.Draw(sheet)
+    for row_index, row in enumerate(rows):
+        image = Image.open(row.image_path).convert("RGB")
+        for col_index, (slot, mode, mask_path) in enumerate(_generic_candidate_comparison_entries(row, column_count)):
+            overlay = _overlay_for_sheet(image, Path(row.box_mask_path), mask_path)
+            overlay = overlay.resize((thumb_w, thumb_h), Image.Resampling.LANCZOS)
+            x = col_index * thumb_w
+            y = row_index * (thumb_h + label_h)
+            sheet.paste(overlay, (x, y + label_h))
+            draw.text((x + 4, y + 3), f"{Path(row.image_path).name} {slot}", fill="black")
+            draw.text((x + 4, y + 19), mode[:34], fill="black")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(path)
+
+
+def _generic_candidate_comparison_entries(
+    row: AutoMaskRecord,
+    limit: int = 6,
+) -> list[tuple[str, str, Path]]:
+    candidate_paths = {
+        str(mode): Path(value)
+        for mode, value in row.settings.get("candidate_refined_paths", {}).items()
+        if value and Path(value).exists()
+    }
+    policy_scores = {str(mode): float(value) for mode, value in row.settings.get("policy_scores", {}).items()}
+    raw_scores = {str(mode): float(value) for mode, value in row.settings.get("candidate_scores", {}).items()}
+    selected = str(row.settings.get("selected_refinement", "unknown"))
+    entries: list[tuple[str, str, Path]] = []
+    used: set[str] = set()
+
+    def add(slot: str, mode: str | None, fallback_path: Path | None = None) -> None:
+        if not mode or mode in used or len(entries) >= limit:
+            return
+        candidate_path = candidate_paths.get(mode, fallback_path)
+        if candidate_path is None or not candidate_path.exists():
+            return
+        entries.append((slot, mode, candidate_path))
+        used.add(mode)
+
+    def best(modes: list[str], scores: dict[str, float]) -> str | None:
+        available = [mode for mode in modes if mode in candidate_paths and mode not in used]
+        return max(available, key=lambda mode: (scores.get(mode, float("-inf")), mode)) if available else None
+
+    add("selected", selected, Path(row.refined_mask_path))
+    ranked_modes = sorted(candidate_paths, key=lambda mode: (policy_scores.get(mode, float("-inf")), mode), reverse=True)
+    add("selector runner-up", best(ranked_modes, policy_scores))
+    add("best unused edge", best([mode for mode in candidate_paths if mode.startswith("edge_")], policy_scores))
+    add("best unused SAM2", best([mode for mode in candidate_paths if mode.startswith("sam2_")], policy_scores))
+    add("highest unused raw", best(list(candidate_paths), raw_scores))
+    while len(entries) < limit:
+        mode = best(ranked_modes, policy_scores)
+        if mode is None:
+            break
+        add("ranked alternative", mode)
+    return entries
 
 
 def _overlay_for_sheet(image: Image.Image, box_path: Path, mask_path: Path) -> Image.Image:

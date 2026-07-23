@@ -304,18 +304,34 @@ selection boost; 1b is the only route to the ~0.22 selected-vs-oracle headroom.
 - [ ] Mean selection regret `≤ 0.10`; `broken_large`/`broken_teeth` regret `< 0.20`
 - [ ] Expected-IoU calibration MAE `≤ 0.15`; leave-category-out regret `≤ 0.05`
 
-#### ⬜ A-S2 · Restore proposal recall for split-tooth defects  *(fixes A2)*
-**Contract**
-- [ ] Recall-safe, Qwen-independent candidate family for repeated / interrupted linear structures, activated by measured repetition & continuity breaks (no category names)
+#### 🚧 A-S2 · Restore proposal recall for split-tooth defects  *(fixes A2; root cause found, fix validated but selector-gated)*
+> **Diagnosis (not what the sprint assumed):** the oracle-zero cases are **not**
+> missing periodicity proposals inside a good region — they are **confidently
+> wrong Qwen localization** (`qwen_region_recall = 0`, `loc_status = valid`) whose
+> box the soft spatial prior then **fences to**, suppressing the true defect. The
+> contrast: the *fallback* (full-image) sample got oracle 0.60 while the
+> confident-wrong ones got 0.0. A confident-wrong box is worse than no box.
+>
+> **Fix built + validated (default OFF):** a measured, category-agnostic trigger
+> (`widen_on_repeated_texture`; repeated-texture ≥ 0.17 — bottle ≤ 0.113 vs zipper
+> ≥ 0.227, wide margin) widens to the full image so evidence is not fenced.
+> Result on the 18-image cohort: **zipper oracle 0.4565 → 0.5750** (dead samples
+> `broken_teeth/001` 0→0.658, `split_teeth/000` 0→0.429), **bottle untouched**.
+> **But selected Dice regressed** (zipper 0.2614 → 0.1906): the widened pool feeds
+> the miscalibrated selector broad candidates it mis-ranks (`fabric_border`
+> collapses). So A-S2's candidate-recall fix works, but its output payoff is
+> **gated behind A-S1b** (selector recalibration) — enable the flag once the
+> selector can rank the enriched pool.
 
 **Tasks**
-- [ ] Diagnose where `split_teeth` signal is lost (pre-fusion / thresholding / component filtering)
-- [ ] Add multi-threshold connected-chain candidates over the full evidence field when Qwen region is narrow/invalid
-- [ ] Preserve small aligned components forming a coherent broken sequence
+- [x] Diagnose where signal is lost → localization fencing (confident-wrong Qwen + soft prior), not thresholding/filtering
+- [x] Add a measured-repetition localization-widening trigger (default off); verified oracle recovery 0→0.43–0.66
+- [ ] Re-enable once the selector is recalibrated (A-S1b); prefer widening to the **periodic extent**, not the full image, to avoid feeding broad candidates to selection
 - [ ] Emit `no_recall_candidate` diagnostic when all candidates lack evidence support
 
 **Acceptance / exit gate**
-- [ ] `split_teeth` oracle Dice `> 0.25` on development samples
+- [x] `split_teeth`/`broken_teeth` oracle Dice `> 0.25` (0.429 / 0.658 with widening)
+- [ ] Selected Dice non-regressing on the widened cohort — **blocked on A-S1b**
 - [ ] No existing bottle proposal family loses oracle Dice
 - [ ] Zero-oracle sample triggers abstention, not a pseudo-label
 
