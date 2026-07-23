@@ -311,6 +311,16 @@ it.
 - [ ] Zero-oracle sample triggers abstention, not a pseudo-label
 
 #### ⬜ A-S3 · Control over-segmentation without sacrificing recall  *(fixes A3)*
+> **Tried → null (do not repeat as an additive fix).** An additive proposal-time
+> SAM2 evidence-trim (intersect the SAM mask with fused ≥ 0.5) left oracle Dice
+> **unchanged** (macro 0.6097 → 0.6097) and selected essentially flat
+> (0.3885 → 0.3887); reverted. Reason: over-expansion is a **selection** error,
+> not candidate availability — a good candidate already exists (`broken_large`
+> oracle ~0.80), but the miscalibrated selector still over-rates the broad SAM
+> mask. So A-S3 is gated by A-S1b (real-candidate recalibration); a *reject*
+> variant would need a normal-only threshold and is overfit-prone until the
+> selector is calibrated.
+
 **Contract**
 - [ ] Each candidate reports component count, parent-relative area growth, concentration, and normal-memory support; suppression is measurement-driven
 
