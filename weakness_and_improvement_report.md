@@ -263,16 +263,29 @@ absolute selector (see A-S1b).
 - [ ] Mean selection regret `0.1808 → ≤ 0.10` — **NOT met (still ~0.20–0.25)**; dominated by absolute-selector mis-ranking → moved to A-S1b
 - [ ] Expected-IoU calibration MAE `≤ 0.15` on development data → A-S1b
 
-#### 🚧 A-S1b · Fix absolute selector calibration  *(fixes A1 — dominant half; BLOCKED on a real-candidate calibration set)*
-Revealed by A-S1: regret is dominated by the absolute IoU model mis-ranking
-NON-edge candidates (inversions: `broken_large` pred 0.61/actual 0.18;
-`broken_small` pred 0.07/actual 0.66). The edge gate cannot touch this.
-**Status:** the synthetic route is a proven **negative result** (over-seg
-augmentation raised regret 0.1808→0.2702 and broke `broken_small`; reverted).
-Blocked on acquiring a dev-category real-candidate calibration set. Next useful
-work is **setup + data acquisition first**, then build the recalibration harness
-and run it **together** — do not land harness code without the data to validate
-it.
+#### ✅ A-S1b · Fix selector calibration via real-candidate recalibration  *(fixes A1 — VALIDATED, deployed)*
+**Result (the first validated, generalizing, output-metric win of the plan).**
+Built a real-candidate calibration set (candidates generated without masks on 5
+dev categories, 4,966 candidates over 144 images; official masks read only
+afterward for IoU labels — `scripts/build_real_selector_calibration.py`,
+`configs/as1b_calib.yaml`). Refit the selector heads on real rows.
+
+Leave-category-out (each category scored by a model trained on the other four):
+- IoU calibration MAE `0.091 → 0.056`, Pearson `0.591 → 0.699`
+- Mean selection regret `0.1985 → 0.1074` (144 images)
+- **End-to-end, bottle/zipper HELD OUT of training**, selected Dice
+  `bottle 0.5155→0.5350`, `zipper 0.2614→0.2996` (macro `0.3885→0.4173`, +0.029);
+  regret `bottle 0.2475→0.2280`, `zipper 0.1950→0.1569`; better on 10/18 samples.
+
+Three consistent signals across sample sizes (calibration on 4,966 candidates,
+regret on 144 images, LCO end-to-end Dice on 18) — robust, unlike isolated n=18
+deltas. The full 5-category real selector is **deployed** to the dev selector
+path (synthetic backed up as `generic_selector.synthetic_backup.joblib`).
+
+**Corrections this established:** (1) the earlier "selector near-random, Pearson
+0.086" was a wrong-slice artifact (selected-only, n=18); full-pool Pearson is
+0.59. (2) The synthetic over-seg augmentation route was a proven **negative**
+(regret 0.1808→0.2702; reverted). Real-candidate recalibration is the fix.
 
 **Also ruled out — heuristic-swap shortcut (experiment 1a):** on the identical
 candidate pool, disabling the learned bundle (→ hand-designed heuristic) is far
