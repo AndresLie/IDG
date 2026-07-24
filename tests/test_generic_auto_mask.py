@@ -510,3 +510,43 @@ def test_subspace_pca_residual_flags_off_subspace_patches() -> None:
     # the injected off-subspace patches must have far larger residual than clean ones
     assert res_anom[:10].mean() > res_clean.mean() + 1.0
     assert res_anom[10:].mean() < res_anom[:10].mean()
+
+
+def test_subspace_pca_cache_reuse_and_invalidation(tmp_path: Path) -> None:
+    from iadgen_v2.auto_mask.evidence import foundation
+    from iadgen_v2.auto_mask.evidence.foundation import SubspacePcaDinoProvider
+
+    foundation._PCA_SUBSPACE_CACHE.clear()
+    rng = np.random.default_rng(1)
+    normals = [rng.standard_normal((32, 8)).astype(np.float32) for _ in range(3)]
+    paths = []
+    for i in range(3):
+        p = tmp_path / f"normal_{i}.png"
+        Image.fromarray(np.full((4, 4), i, dtype=np.uint8)).save(p)
+        paths.append(p)
+    prov = SubspacePcaDinoProvider(variance=0.9)
+
+    key = prov._subspace_key(tuple(paths))
+    _, _, hit_first = prov._cached_subspace(normals, key)
+    pca_a, _, hit_second = prov._cached_subspace(normals, key)
+    assert hit_first is False and hit_second is True  # reused within the process
+
+    # Invalidation: a changed normal file (different size) yields a different key,
+    # and a different parameter (variance) also yields a different key.
+    Image.fromarray(np.zeros((16, 16), dtype=np.uint8)).save(paths[0])
+    assert prov._subspace_key(tuple(paths)) != key
+    assert SubspacePcaDinoProvider(variance=0.95)._subspace_key(tuple(paths)) != key
+    _, _, hit_after_change = prov._cached_subspace(normals, prov._subspace_key(tuple(paths)))
+    assert hit_after_change is False  # stale entry not reused
+
+
+def test_subspace_pca_loo_calibration_is_deterministic() -> None:
+    from iadgen_v2.auto_mask.evidence.foundation import SubspacePcaDinoProvider
+
+    rng = np.random.default_rng(2)
+    normals = [rng.standard_normal((40, 8)).astype(np.float32) for _ in range(4)]
+    prov = SubspacePcaDinoProvider(variance=0.9)
+    first = prov._loo_calibration(normals)
+    second = prov._loo_calibration([n.copy() for n in normals])
+    assert first is not None and first["mad"] > 0
+    assert first == second  # svd_solver="full" LOO is deterministic

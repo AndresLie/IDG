@@ -19,6 +19,10 @@ _MODEL_CACHE: dict[tuple[str, str | None, str], tuple[Any, Any, Any]] = {}
 # category, but were previously re-encoded per image. Cache them in-process
 # (and optionally on disk) so each normal is encoded once per (content, scale).
 _NORMAL_TOKEN_CACHE: dict[tuple[str, str, tuple[int, ...], int], np.ndarray] = {}
+# Fitting the normal PCA basis and leave-one-normal-out calibration dominates
+# this provider's CPU cost. A category normally reuses the same normal set for
+# every defect image, so retain the fitted objects for the process lifetime.
+_PCA_SUBSPACE_CACHE: dict[tuple[Any, ...], tuple[Any, dict[str, float] | None]] = {}
 
 
 def _load_model(model_id: str, cache_dir: str | None, device: str) -> tuple[Any, Any, Any]:
@@ -487,9 +491,10 @@ class SubspacePcaDinoProvider:
         ]
         if not normal_tokens:
             raise ValueError("PCA subspace evidence requires normal references")
-        residual = self._reconstruction_residual(np.concatenate(normal_tokens, axis=0), target)
+        subspace_key = self._subspace_key(context.normal_paths[: self.max_normals])
+        pca, calibration, subspace_cache_hit = self._cached_subspace(normal_tokens, subspace_key)
+        residual = self._residual_from_pca(pca, target)
         raw = _resize_map(residual.reshape(grid), grid, context.image_size)
-        calibration = self._loo_calibration(normal_tokens)
         probability, used = robust_probability(raw, calibration)
         probability = apply_soft_spatial_prior(probability, context.semantic_regions)
         normal_factor = min(1.0, len(context.normal_paths) / 4.0)
@@ -507,6 +512,7 @@ class SubspacePcaDinoProvider:
                 "pca_variance": self.variance,
                 "normals_used": len(normal_tokens),
                 "calibration_source": "leave_one_normal_out" if len(normal_tokens) >= 2 else "target_fallback",
+                "subspace_cache_hit": subspace_cache_hit,
             },
         )
 
@@ -520,10 +526,40 @@ class SubspacePcaDinoProvider:
         pca.fit(np.asarray(feats, dtype=np.float32))
         return pca
 
-    def _reconstruction_residual(self, normal_feats: np.ndarray, target: np.ndarray) -> np.ndarray:
-        pca = self._fit(normal_feats)
+    def _residual_from_pca(self, pca: Any, target: np.ndarray) -> np.ndarray:
         recon = pca.inverse_transform(pca.transform(np.asarray(target, dtype=np.float32)))
         return np.linalg.norm(target - recon, axis=1).astype(np.float32)
+
+    def _reconstruction_residual(self, normal_feats: np.ndarray, target: np.ndarray) -> np.ndarray:
+        return self._residual_from_pca(self._fit(normal_feats), target)
+
+    def _cached_subspace(
+        self,
+        normal_tokens: list[np.ndarray],
+        cache_key: tuple[Any, ...],
+    ) -> tuple[Any, dict[str, float] | None, bool]:
+        cached = _PCA_SUBSPACE_CACHE.get(cache_key)
+        if cached is not None:
+            return cached[0], cached[1], True
+        pca = self._fit(np.concatenate(normal_tokens, axis=0))
+        calibration = self._loo_calibration(normal_tokens)
+        _PCA_SUBSPACE_CACHE[cache_key] = (pca, calibration)
+        return pca, calibration, False
+
+    def _subspace_key(self, paths: tuple[Path, ...]) -> tuple[Any, ...]:
+        identities = []
+        for path in paths:
+            resolved = Path(path).resolve()
+            stat = resolved.stat()
+            identities.append((str(resolved), stat.st_size, stat.st_mtime_ns))
+        return (
+            self.model_id,
+            tuple(self.layers),
+            int(self.scale),
+            float(self.variance),
+            int(self.calibration_normals),
+            tuple(identities),
+        )
 
     def _loo_calibration(self, normal_tokens: list[np.ndarray]) -> dict[str, float] | None:
         if len(normal_tokens) < 2:
