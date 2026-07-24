@@ -352,6 +352,7 @@ def run_auto_masks(config: AppConfig) -> Path:
                     image_path=image_path,
                     normal_paths=normal_index.get(category, []),
                     region=generic_region,
+                    structure_region=region,
                     semantic_regions=generic_semantic,
                     output_dir=run_output_dir / "masks" / category / defect_type,
                     variant_dir=run_output_dir / "mask_variants" / category / defect_type,
@@ -10392,6 +10393,7 @@ def _run_generic_mask_artifacts(
     image_path: Path,
     normal_paths: list[Path],
     region: tuple[int, int, int, int],
+    structure_region: tuple[int, int, int, int],
     semantic_regions: list[tuple[int, int, int, int]],
     output_dir: Path,
     variant_dir: Path,
@@ -10401,7 +10403,7 @@ def _run_generic_mask_artifacts(
     generic = auto.get("generic_evidence", {})
     if not isinstance(generic, dict):
         raise ValueError("auto_masks.generic_evidence must be a mapping")
-    structure_attributes = _generic_structure_attributes(image, region)
+    structure_attributes = _generic_structure_attributes(image, structure_region)
     providers: list[Any] = []
     if bool(generic.get("dinov2_enabled", True)):
         providers.append(
