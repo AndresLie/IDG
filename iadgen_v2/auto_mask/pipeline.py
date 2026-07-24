@@ -13,6 +13,7 @@ from iadgen_v2.auto_mask.evidence.base import fuse_evidence_maps
 from iadgen_v2.auto_mask.mask_roles import posterior_mask_roles
 from iadgen_v2.auto_mask.proposals import (
     SamRefiner,
+    additive_map_proposals,
     generate_generic_proposals,
     proposal_from_mask,
     refine_proposals,
@@ -33,6 +34,7 @@ def run_generic_evidence_pipeline(
     edge_refine: bool = True,
     min_component_area: int = 8,
     specialist_masks: dict[str, np.ndarray] | None = None,
+    additive_providers: Iterable[EvidenceProvider] | None = None,
 ) -> dict[str, Any]:
     output_dir.mkdir(parents=True, exist_ok=True)
     variant_dir.mkdir(parents=True, exist_ok=True)
@@ -52,6 +54,19 @@ def run_generic_evidence_pipeline(
             provider_seconds[name] = round(time.monotonic() - start, 3)
     if not evidence:
         raise ValueError(f"Generic evidence pipeline produced no evidence: {failures}")
+    # Additive providers are computed but kept OUT of fusion: their maps only spawn
+    # extra candidates appended to the pool, so baseline fusion/candidates are
+    # unchanged (strictly-additive PCA evaluation).
+    additive_evidence = []
+    for provider in additive_providers or []:
+        name = getattr(provider, "name", type(provider).__name__)
+        start = time.monotonic()
+        try:
+            additive_evidence.append(provider.compute(context))
+        except Exception as exc:
+            failures[name] = str(exc)
+        finally:
+            provider_seconds[name] = round(time.monotonic() - start, 3)
     fused, disagreement, fusion_metadata = fuse_evidence_maps(evidence)
     fused_path = output_dir / f"{artifact_stem}_fused_evidence.png"
     disagreement_path = output_dir / f"{artifact_stem}_source_disagreement.png"
@@ -108,6 +123,24 @@ def run_generic_evidence_pipeline(
                 foreground=context.foreground,
                 region=context.primary_region,
                 prefix="edge",
+            )
+        )
+    # Strictly-additive candidates from out-of-fusion providers (e.g. PCA residual),
+    # scored in the baseline feature space and edge-snapped for parity.
+    additive_proposals: list[CandidateProposal] = []
+    for item in additive_evidence:
+        additive_proposals.extend(
+            additive_map_proposals(
+                item.source, item.values, fused, disagreement, evidence,
+                context.primary_region, foreground=context.foreground, min_area=min_component_area,
+            )
+        )
+    proposals.extend(additive_proposals)
+    if edge_refiner is not None and additive_proposals:
+        proposals.extend(
+            refine_proposals(
+                edge_refiner, additive_proposals, fused, disagreement, evidence,
+                foreground=context.foreground, region=context.primary_region, prefix="edge",
             )
         )
     proposals.sort(key=lambda proposal: proposal.score, reverse=True)

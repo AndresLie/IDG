@@ -350,6 +350,45 @@ def test_generic_proposals_selector_and_pipeline_write_contract_outputs(tmp_path
         assert Path(artifacts["mask_variant_paths"][name]).exists()
 
 
+def test_additive_provider_preserves_baseline_candidates(tmp_path: Path) -> None:
+    # Strict additivity: an out-of-fusion additive provider must leave every
+    # baseline candidate (mode + measurements) unchanged and only append new ones.
+    image_path = tmp_path / "defect.png"
+    normal_path = tmp_path / "normal.png"
+    Image.new("RGB", (64, 64), (120, 120, 120)).save(image_path)
+    Image.new("RGB", (64, 64), (120, 120, 120)).save(normal_path)
+    first = np.full((64, 64), 0.08, dtype=np.float32)
+    second = np.full((64, 64), 0.12, dtype=np.float32)
+    first[20:40, 22:42] = 0.95
+    second[21:41, 21:41] = 0.90
+
+    def ctx():
+        return AutoMaskContext(
+            image_path=image_path, normal_paths=(normal_path,), image_size=(64, 64),
+            semantic_regions=((12, 12, 52, 52),), foreground=np.ones((64, 64), dtype=bool), cache_key="t",
+        )
+
+    def run(out, additive):
+        return run_generic_evidence_pipeline(
+            ctx(), [_FixedProvider("first", first), _FixedProvider("second", second)],
+            output_dir=tmp_path / out, variant_dir=tmp_path / (out + "v"), artifact_stem="s",
+            selector=GenericCandidateSelector(), min_component_area=4, additive_providers=additive,
+        )
+
+    base = run("base", None)
+    pca_map = np.full((64, 64), 0.05, dtype=np.float32)
+    pca_map[44:56, 44:56] = 0.99  # a distinct hot region outside the baseline blob
+    withadd = run("add", [_FixedProvider("pca", pca_map)])
+
+    base_modes = set(base["candidate_measurements"])
+    add_modes = set(withadd["candidate_measurements"])
+    for mode in base_modes:  # every baseline candidate preserved, measurements identical
+        assert mode in add_modes
+        assert base["candidate_measurements"][mode] == withadd["candidate_measurements"][mode]
+    assert add_modes > base_modes  # extra candidates appended
+    assert any(mode.startswith("pca_") for mode in add_modes)  # from the additive provider
+
+
 def test_selector_bundle_uses_leave_category_out_training(tmp_path: Path) -> None:
     rows = []
     for category_index, category in enumerate(("a", "b", "c")):
@@ -570,6 +609,16 @@ def test_repeated_texture_evidence_gate_uses_measurements_not_category_names() -
     assert active["reason"] == "score_meets_threshold"
     assert rejected is False
     assert inactive["reason"] == "score_below_threshold"
+
+
+def test_evidence_gate_raises_on_unsupported_mode() -> None:
+    # An unsupported gate mode must raise; the auto-mask path therefore only
+    # parses the gate when the PCA feature is enabled, so a disabled-PCA config
+    # with a stray gate value cannot break.
+    from iadgen_v2.auto_mask.structure import evaluate_evidence_gate
+
+    with pytest.raises(ValueError):
+        evaluate_evidence_gate("some_unsupported_mode", {"repeated_texture_score": 0.5})
 
 
 def test_structure_profile_uses_rim_score_scale_without_false_ring_routing() -> None:

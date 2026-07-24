@@ -212,6 +212,45 @@ def proposal_from_mask(
     return proposals[0]
 
 
+def additive_map_proposals(
+    source: str,
+    evidence_map: np.ndarray,
+    fused: np.ndarray,
+    disagreement: np.ndarray,
+    evidence: list[EvidenceMap],
+    region: tuple[int, int, int, int],
+    *,
+    foreground: np.ndarray | None = None,
+    quantiles: tuple[float, ...] = (0.90, 0.95),
+    min_area: int = 8,
+    max_components: int = 2,
+) -> list[CandidateProposal]:
+    """Threshold an out-of-fusion evidence map into candidate masks and score them
+    against the BASELINE ``fused`` map / ``evidence`` list, so they enter the pool
+    as strictly-additive candidates: every baseline candidate is preserved and
+    these are appended. Used for default-off PCA-residual candidates."""
+    region_values = _region_values(evidence_map, region)
+    proposals: list[CandidateProposal] = []
+    seen: set[bytes] = set()
+    for quantile in quantiles:
+        threshold = max(0.05, float(np.quantile(region_values, quantile)) if region_values.size else 1.0)
+        raw = _remove_small(evidence_map >= threshold, min_area)
+        tag = f"{source}_q{int(round(quantile * 1000)):03d}"
+        if raw.any():
+            _append_unique(proposals, seen, raw, mode=tag, fused=fused, disagreement=disagreement,
+                           evidence=evidence, foreground=foreground, region=region, sam_boundary_agreement=0.0)
+        count, labels = cv2.connectedComponents(raw.astype(np.uint8), connectivity=8)
+        components = sorted(
+            ((labels == index) for index in range(1, count) if int((labels == index).sum()) >= min_area),
+            key=lambda mask: int(mask.sum()), reverse=True,
+        )
+        for index, component in enumerate(components[:max_components]):
+            _append_unique(proposals, seen, component, mode=f"{tag}_component_{index + 1}", fused=fused,
+                           disagreement=disagreement, evidence=evidence, foreground=foreground,
+                           region=region, sam_boundary_agreement=0.0)
+    return proposals
+
+
 def proposal_measurements(
     mask: np.ndarray,
     fused: np.ndarray,

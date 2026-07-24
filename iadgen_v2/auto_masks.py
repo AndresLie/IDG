@@ -10419,27 +10419,35 @@ def _run_generic_mask_artifacts(
             )
         )
     pca_enabled = bool(generic.get("pca_subspace_enabled", False))
-    pca_gate_mode = str(generic.get("pca_subspace_gate", "always"))
-    pca_gate_passed, pca_gate = evaluate_evidence_gate(
-        pca_gate_mode,
-        structure_attributes,
-        repeated_texture_threshold=float(generic.get("pca_subspace_repeated_texture_threshold", 0.20)),
-    )
-    pca_gate["enabled"] = pca_enabled
-    pca_gate["active"] = bool(pca_enabled and pca_gate_passed)
-    if pca_enabled and pca_gate_passed:
-        providers.append(
-            SubspacePcaDinoProvider(
-                model_id=str(auto.get("dinov2_model", "facebook/dinov2-small")),
-                cache_dir=auto.get("dinov2_cache_dir"),
-                device=str(auto.get("dinov2_device", "auto")),
-                scale=int(generic.get("dinov2_scales", [448])[0]),
-                layers=tuple(int(value) for value in generic.get("dinov2_layers", [-4, -1])),
-                max_normals=int(generic.get("max_normals", 16)),
-                variance=float(generic.get("pca_subspace_variance", 0.9)),
-                artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "dinov2_subspace",
-            )
+    pca_additive = bool(generic.get("pca_subspace_additive", False))
+    # Only parse the gate when the feature is on: an unsupported gate mode must
+    # not raise for a configuration whose PCA evidence is disabled.
+    if pca_enabled:
+        pca_gate_passed, pca_gate = evaluate_evidence_gate(
+            str(generic.get("pca_subspace_gate", "always")),
+            structure_attributes,
+            repeated_texture_threshold=float(generic.get("pca_subspace_repeated_texture_threshold", 0.20)),
         )
+    else:
+        pca_gate_passed, pca_gate = False, {"mode": "disabled", "passed": False, "reason": "pca_disabled"}
+    pca_gate["enabled"] = pca_enabled
+    pca_gate["additive"] = pca_additive
+    pca_gate["active"] = bool(pca_enabled and pca_gate_passed)
+    # In additive mode the PCA residual is kept OUT of fusion and only appends
+    # candidates, so baseline candidates are unchanged (strictly-additive test).
+    additive_providers: list[Any] = []
+    if pca_enabled and pca_gate_passed:
+        pca_provider = SubspacePcaDinoProvider(
+            model_id=str(auto.get("dinov2_model", "facebook/dinov2-small")),
+            cache_dir=auto.get("dinov2_cache_dir"),
+            device=str(auto.get("dinov2_device", "auto")),
+            scale=int(generic.get("dinov2_scales", [448])[0]),
+            layers=tuple(int(value) for value in generic.get("dinov2_layers", [-4, -1])),
+            max_normals=int(generic.get("max_normals", 16)),
+            variance=float(generic.get("pca_subspace_variance", 0.9)),
+            artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "dinov2_subspace",
+        )
+        (additive_providers if pca_additive else providers).append(pca_provider)
     if bool(generic.get("registered_residual_enabled", True)):
         providers.append(
             RegisteredDinoResidualProvider(
@@ -10570,6 +10578,7 @@ def _run_generic_mask_artifacts(
         edge_refine=bool(generic.get("edge_refine", True)),
         min_component_area=int(auto.get("min_component_area", 12)),
         specialist_masks=specialist_masks,
+        additive_providers=additive_providers,
     )
     artifacts["parameters"]["specialists"] = str(auto.get("specialists", "disabled"))
     artifacts["parameters"]["active_structural_specialists"] = sorted(specialist_masks)
