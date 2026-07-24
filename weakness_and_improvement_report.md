@@ -254,6 +254,50 @@ reports/r3_locked_confirmation/locked_candidate_pool_analysis.md
 reports/r3_locked_confirmation/locked_result_review.md
 ```
 
+## 1e. Current frozen development rerun (2026-07-24)
+
+The current widened selector was rerun on the identical 144-image,
+five-category development candidate pool. Candidate generation was exactly
+reproducible:
+
+```text
+5,215 / 5,215 candidate masks byte-identical
+all candidate measurements exact
+all Qwen regions exact
+candidate oracle Dice unchanged
+```
+
+Only selection changed. The previous metadata exactly replays the retained
+nonwidened selector, while the current metadata exactly replays the deployed
+widened selector:
+
+| Metric | Previous nonwidened | Current widened | Delta |
+| --- | ---: | ---: | ---: |
+| Category-macro Dice | `0.5558` | `0.6078` | `+0.0520` |
+| Category-macro regret | `0.1081` | `0.0561` | `-0.0520` |
+| Category-macro oracle Dice | `0.6639` | `0.6639` | `0.0000` |
+
+The hierarchical paired 95% interval for macro Dice is
+`[+0.0258, +0.0844]`. All five development category means improve, led by
+wood (`+0.1071`).
+
+This does not overturn the locked result. On the ten exposed locked categories,
+the nonwidened selector remains slightly better than widened (`0.3292` versus
+`0.3161`). The combined evidence indicates development-specific benefit and
+imperfect transfer, not a general release win.
+
+The rerun also exposed a provenance defect: prior manifests hashed the config
+but did not record the mutable selector file behind `selector_model_path`.
+Future manifests now record the architecture-core fingerprint and explicit
+SHA-256 records for configured selector/SAM artifacts.
+
+Full review:
+
+```text
+reports/current_pipeline_checkpoint/frozen_current_rerun/current_vs_previous_review.md
+reports/current_pipeline_checkpoint/frozen_current_rerun/selected_mask_comparison.png
+```
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.

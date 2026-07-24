@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -85,6 +86,7 @@ def test_experiment_manifest_records_governance_dataset_and_code_fingerprints(tm
     assert manifest["dataset"]["file_count"] == 1
     assert len(manifest["dataset"]["inventory_fingerprint"]) == 64
     assert len(manifest["code"]["content_fingerprint"]) == 64
+    assert len(manifest["architecture_core_fingerprint"]) == 64
     assert manifest["provider"] == "qwen"
 
     path = write_experiment_manifest(config, "auto-masks", provider="qwen")
@@ -92,6 +94,35 @@ def test_experiment_manifest_records_governance_dataset_and_code_fingerprints(tm
     latest = json.loads((path.parent / "latest.json").read_text(encoding="utf-8"))
     assert written["run_id"] == latest["run_id"]
     assert latest["manifest_path"] == str(path)
+
+
+def test_experiment_manifest_hashes_mutable_selector_artifact(tmp_path: Path) -> None:
+    selector = tmp_path / "models" / "selector.joblib"
+    selector.parent.mkdir(parents=True)
+    selector.write_bytes(b"selector-v1")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+            extra=["auto_masks:", f"  selector_model_path: {selector}"],
+        )
+    )
+
+    first = build_experiment_manifest(config, "auto-masks")
+    selector.write_bytes(b"selector-v2")
+    second = build_experiment_manifest(config, "auto-masks")
+
+    assert first["configured_artifacts"] == [
+        {
+            "config_key": "auto_masks.selector_model_path",
+            "path": str(selector),
+            "kind": "file",
+            "size": len(b"selector-v1"),
+            "sha256": hashlib.sha256(b"selector-v1").hexdigest(),
+        }
+    ]
+    assert second["configured_artifacts"][0]["sha256"] == hashlib.sha256(b"selector-v2").hexdigest()
+    assert first["architecture_core_fingerprint"] != second["architecture_core_fingerprint"]
 
 
 def test_generalization_contracts_validate_shapes_confidence_and_disposition() -> None:

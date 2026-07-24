@@ -326,6 +326,8 @@ def build_experiment_manifest(
         "dataset": dataset_inventory(config),
         "code": code_inventory(config),
         "models_fingerprint": fingerprint(config.data.get("models", {})),
+        "architecture_core_fingerprint": architecture_core_fingerprint(config),
+        "configured_artifacts": configured_artifact_inventory(config, command),
         "runtime": {
             "python": sys.version.split()[0],
             "implementation": platform.python_implementation(),
@@ -468,6 +470,29 @@ def input_artifact_inventory(config: AppConfig, command: str) -> list[dict[str, 
         if path.is_file():
             paths.add(path)
     return [_artifact_record(path) for path in sorted(paths)]
+
+
+def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[str, Any]]:
+    """Hash file-backed model inputs referenced directly by the active config."""
+
+    if command not in {"auto-masks", "auto-masks-reselect"}:
+        return []
+    auto = config.data.get("auto_masks", {})
+    if not isinstance(auto, dict):
+        return []
+    records: list[dict[str, Any]] = []
+    for key in ("selector_model_path", "sam2_checkpoint", "sam_checkpoint"):
+        value = auto.get(key)
+        if not value:
+            continue
+        path = config.resolve_path(str(value))
+        record = {"config_key": f"auto_masks.{key}", "path": str(path)}
+        if path.is_file():
+            record.update(_artifact_record(path))
+        else:
+            record.update({"kind": "missing", "size": None, "sha256": None})
+        records.append(record)
+    return records
 
 
 def _artifact_record(path: Path) -> dict[str, Any]:
