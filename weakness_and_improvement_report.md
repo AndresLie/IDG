@@ -165,6 +165,37 @@ leave-category-out validation. Archive the route if macro oracle gain remains
 below `0.01` or any held-out category regresses by more than `0.01` selected
 Dice.
 
+## 1c. Strictly-additive PCA probe (2026-07-24)
+
+All four preconditions from §1b are now met (basis/calibration cached,
+`augmentation_consistency=None`, strict-superset candidate family via
+`pca_subspace_additive`, LOCO refit). The PCA residual is kept **out of fusion**
+and only *appends* candidates, so baseline candidates are byte-preserved — the
+oracle can only rise. Pool: 144 dev images, 7243 candidates (2028 PCA-appended),
+gate `always`. Empirical additivity check: **oracle never regresses** (0/144
+violations; PCA raised the oracle on 68/144). Selector refit leave-category-out
+on baseline-only vs full pool:
+
+| | Baseline-only | Additive full |
+| --- | ---: | ---: |
+| Category-macro selected Dice | `0.4892` | `0.5303` |
+| Macro Dice regret | `0.1747` | `0.1650` |
+
+Per-category selected-Dice delta (full − baseline): metal_nut **`+0.174`**,
+zipper `+0.047`, tile `+0.011`, bottle `−0.006`, wood `−0.019`. Paired
+hierarchical bootstrap of the macro delta: **`+0.0411`, 95% CI
+`[−0.0110, +0.1161]`**, P(≤0) ≈ `0.096`, wins/ties/losses `50/57/37`.
+
+**Read:** strict additivity removes the fused-PCA oracle-regression confound and
+lifts the point estimate (macro `+0.041`, P(≤0)≈10%), but the **CI still crosses
+zero** — PCA stays **default-off**. The sharper finding: because the oracle is
+monotone here, the residual bottle/wood regressions are pure **selection errors**
+(the selector sometimes picks a worse PCA candidate), not evidence problems. That
+localizes the next lever to selection quality on the union pool, not the PCA
+provider — and confirms the macro result is **power-limited on 5 categories**, so
+R2/R3 (locked categories) remains the decisive unlock. Reproduce:
+`scripts/evaluate_additive_pca_loco.py` on `configs/as1b_calib_widen_pca_additive.yaml`.
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.
