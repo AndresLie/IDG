@@ -1,0 +1,131 @@
+schema_version: 1
+study_id: iadgen-v3-locked-mvtec-r3
+sealed_date_utc: "2026-07-24"
+status: sealed_before_locked_data_acquisition
+
+research_question:
+  primary: >-
+    Does real-candidate-calibrated selection with measured repeated-structure
+    widening improve selected pseudo-mask Dice over the frozen
+    synthetic-corruption-trained selector on categories excluded from all
+    architecture and selector development?
+  method_label: development-supervised category-held-out pseudo-mask selection
+
+data:
+  benchmark: MVTec AD
+  license: CC BY-NC-SA 4.0
+  development_categories: [bottle, zipper, wood, metal_nut, tile]
+  locked_categories:
+    [carpet, cable, capsule, grid, hazelnut, leather, pill, screw, toothbrush, transistor]
+  source_archive:
+    url: >-
+      https://huggingface.co/datasets/micguida1/mvtech_anomaly_detection/resolve/main/mvtec_anomaly_detection.tar.xz?download=true
+    repository_revision: eb692b36147a3b3f12c561b879a062104c1f20b8
+    expected_size_bytes: 5264982680
+    expected_linked_etag: cf4313b13603bec67abb49ca959488f7eedce2a9f7795ec54446c649ac98cd3d
+  runtime_root: data/mvtec_locked_runtime
+  official_reference_root: data/locked_official_reference_masks
+  isolation_contract: >-
+    Runtime commands receive train/good and test defect images only. Official
+    masks are copied to the isolated reference root by
+    prepare-locked-benchmark and may be opened only by locked-evaluate.
+
+frozen_implementation:
+  implementation_commit: a614061
+  architecture_tag: v3-generic-evidence-frozen-20260723
+  architecture_core_fingerprint: 07535d35a3144db4cb8e93beeac309e992f8e6151847dd82b2e03469f801772f
+  code_content_fingerprint: 728166dd5391ed3bc058ca863e2a0db8c8f7ce9b1c212da406c875eefaa0f7e6
+  models_fingerprint: 277df7fc96a381206919722af4a9aa6a45a24f46de489bea73c95fe8354a1d48
+  locked_config:
+    path: configs/v3_generic_evidence_locked.yaml
+    sha256: 112914fd40626d062492b404e59e4cb21caa4ca8f4c9307addf57bc624a49edd
+  development_checkpoint_config:
+    path: configs/v3_generic_evidence_frozen.yaml
+    sha256: c33c805ae3c433869b252ab3e375d64816dc6c71074010e12964f0ebfe4be570
+  selectors:
+    synthetic_baseline:
+      path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.synthetic_backup.joblib
+      sha256: 1a39174039b995bd08991a31dbe45eed34b086f38d7b89c878bd377f52140840
+    real_candidate_nonwidened:
+      path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.a_s1b_nonwiden_backup.joblib
+      sha256: 3d16a199ca7595bd1e29058a8e6cd94631416946b1c02ef370790b9b0bedad12
+    real_candidate_widened:
+      path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.joblib
+      sha256: 1f7fdb0c216f34f1c6b5f1561416f4dfcb5d2da00350347825190c53c5a91a68
+  specialists: disabled
+  pca_subspace: disabled
+  post_access_architecture_or_threshold_tuning: forbidden
+
+comparison:
+  candidate_pool: identical widened pool for the primary selector comparison
+  primary_baseline: synthetic_baseline
+  primary_method: real_candidate_widened
+  secondary_method: real_candidate_nonwidened
+  standalone_reference: normal-only foundation-feature anomaly baseline
+
+endpoints:
+  primary:
+    name: category_macro_selected_dice_delta
+    direction: higher_is_better
+    comparison: real_candidate_widened_minus_synthetic_baseline
+    success_rule: hierarchical_bootstrap_ci95_lower_bound_above_zero
+  secondary:
+    - selected_dice
+    - selected_iou
+    - precision
+    - recall
+    - pixel_ap
+    - aupro
+    - search_region_recall
+    - oracle_dice
+    - selection_regret
+    - candidate_iou_mae
+    - accepted_mask_coverage
+    - selective_risk
+    - runtime_seconds
+    - peak_gpu_memory_bytes
+  engineering_targets_not_used_as_publication_filters:
+    category_macro_dice_min: 0.55
+    every_category_dice_min: 0.30
+    category_macro_search_region_recall_min: 0.90
+    accepted_mask_coverage_min: 0.75
+
+statistics:
+  bootstrap_unit: category_then_image
+  bootstrap_replicates: 10000
+  bootstrap_seed: 20260724
+  confidence_interval: 0.95
+  paired_by: category_defect_type_image
+  report:
+    - category_macro
+    - per_category
+    - worst_category
+    - worst_quartile
+    - wins_ties_losses
+
+exclusions:
+  permitted:
+    - unreadable_or_corrupt_source_file_verified_before_runtime_inference
+    - missing_official_pair_detected_during_governed_preparation
+  forbidden:
+    - exclusion_based_on_model_error_or_low_metric
+    - category_specific_post_hoc_threshold
+    - category_specific_prompt_or_candidate_bonus
+    - rerun_selected_from_multiple_locked_attempts
+
+failure_policy:
+  runtime_failure: preserve failed manifest, fix infrastructure only, and rerun without changing behavior
+  missing_category_or_mask: stop before inference and repair acquisition provenance
+  poor_category_result: report unchanged; do not tune using the exposed category
+  null_primary_interval: narrow the claim to development-category calibration
+  specialist_or_category_cue_failure: define a future split; do not recycle this locked cohort
+
+execution_order:
+  - acquire and hash the source archive
+  - split runtime images from isolated official references
+  - verify runtime tree contains no ground_truth directory
+  - seal runtime, reference, config, code, selector, and model hashes
+  - run each preregistered runtime method once without reference-mask access
+  - finalize runtime manifests and output hashes
+  - invoke locked-evaluate once
+  - publish all category results and failure sheets without post-hoc repair
