@@ -84,15 +84,43 @@ def syn_predict(syn, Xi):
 def per_image_selection(images, predict):
     """Return list of dicts with the selected candidate's regret / selected iou&dice."""
     rows = []
-    for cat, morph, _iid, cands in images:
+    for cat, morph, iid, cands in images:
         X = np.asarray([c[0] for c in cands], dtype=np.float32)
         iou = np.asarray([c[1] for c in cands]); dice = np.asarray([c[2] for c in cands])
         j = int(np.argmax(predict(cat, X)))
-        rows.append({"cat": cat, "morph": morph,
+        rows.append({"cat": cat, "morph": morph, "iid": iid,
                      "regret": float(iou.max() - iou[j]),
                      "sel_iou": float(iou[j]), "sel_dice": float(dice[j]),
                      "oracle_iou": float(iou.max())})
     return rows
+
+
+def cross_pool_paired(rows_a, rows_b, field="sel_dice", n=2000, seed=4242):
+    """Paired hierarchical bootstrap of mean (a - b) over images shared by both
+    pools, matched by image id, resampling categories then images. `a` is the
+    widened pool, `b` the non-widened pool: positive => widening helps `field`."""
+    by_iid_b = {r["iid"]: r for r in rows_b}
+    paired = [(a["cat"], a[field] - by_iid_b[a["iid"]][field]) for a in rows_a if a["iid"] in by_iid_b]
+    if not paired:
+        return {"n": 0}
+    rng = np.random.default_rng(seed)
+    by_cat = {}
+    for cat, d in paired:
+        by_cat.setdefault(cat, []).append(d)
+    keys = list(by_cat)
+    means = []
+    for _ in range(n):
+        drawn = rng.choice(len(keys), len(keys), replace=True)
+        vals = []
+        for gi in drawn:
+            g = by_cat[keys[gi]]
+            idx = rng.integers(0, len(g), len(g))
+            vals.extend(g[i] for i in idx)
+        means.append(float(np.mean(vals)))
+    lo, hi = np.percentile(means, [2.5, 97.5])
+    pt = float(np.mean([d for _, d in paired]))
+    return {"n": len(paired), "mean": round(pt, 4), "ci95": [round(float(lo), 4), round(float(hi), 4)],
+            "excludes_zero": bool(lo > 0 or hi < 0)}
 
 
 def hier_bootstrap_delta(rows_syn, rows_real, unit, field="regret", n=2000, seed=12345):
@@ -194,6 +222,7 @@ def evaluate_pool(metadata, root, syn):
 
     return {
         "candidate_pool_hash": pool_hash(images),
+        "_rows_syn": rows_syn, "_rows_real": rows_real,  # popped before serialization
         "cohort": {"images": len(images), "candidates": int(len(y)), "categories": cats},
         "calibration_oof": {"synthetic": {"mae": syn_mae, "pearson": syn_pear},
                             "real_lco": {"mae": real_mae, "pearson": real_pear}},
@@ -235,18 +264,31 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
 
     syn = load_selector(args.synthetic)
+    widened = evaluate_pool(args.metadata, args.root, syn)
     report = {
         "selector_parent_hashes": {"synthetic_backup": file_hash(args.synthetic),
                                    "deployed": file_hash(args.deployed)},
         "cohort_separation_note": "OOF calibration cohort below is the 144-image dev set; the 18-image deployed pilot is reported separately in reports/current_pipeline_checkpoint and is NOT mixed in.",
         "structure_profile_caveat": "settings.structure_profile is degenerate on this cohort (ring_sector-dominant, no linear/edge classes); per-morphology deltas use defect_type, not structure_profile.",
-        "variants": {
-            "A-S1b+A-S2 (widened, deployed pool)": evaluate_pool(args.metadata, args.root, syn),
-        },
+        "widening_note": "Within a pool, synthetic-vs-real is a SELECTOR effect, not a widening effect. The widening effect is the cross-pool per-selector delta (widened - non-widened) below, paired by image id.",
+        "variants": {"A-S1b+A-S2 (widened, deployed pool)": widened},
     }
+    nonwiden = None
     if args.metadata_nonwiden and args.metadata_nonwiden.exists():
-        report["variants"]["A-S1b (non-widened pool)"] = evaluate_pool(args.metadata_nonwiden, args.root, syn)
+        nonwiden = evaluate_pool(args.metadata_nonwiden, args.root, syn)
+        report["variants"]["A-S1b (non-widened pool)"] = nonwiden
+        # Widening effect held per-selector, paired across pools by image id.
+        report["widening_effect_cross_pool_selected_dice"] = {
+            "synthetic_selector": cross_pool_paired(widened["_rows_syn"], nonwiden["_rows_syn"], field="sel_dice"),
+            "real_selector": cross_pool_paired(widened["_rows_real"], nonwiden["_rows_real"], field="sel_dice"),
+        }
+        report["widening_effect_cross_pool_regret"] = {
+            "synthetic_selector": cross_pool_paired(widened["_rows_syn"], nonwiden["_rows_syn"], field="regret"),
+            "real_selector": cross_pool_paired(widened["_rows_real"], nonwiden["_rows_real"], field="regret"),
+        }
 
+    for v in report["variants"].values():  # drop internal per-image rows before serialization
+        v.pop("_rows_syn", None); v.pop("_rows_real", None)
     (args.out / "selector_evidence_pack.json").write_text(json.dumps(report, indent=2))
     print(json.dumps(report, indent=2))
 
