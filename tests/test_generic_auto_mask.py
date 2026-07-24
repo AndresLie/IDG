@@ -550,3 +550,84 @@ def test_subspace_pca_loo_calibration_is_deterministic() -> None:
     second = prov._loo_calibration([n.copy() for n in normals])
     assert first is not None and first["mad"] > 0
     assert first == second  # svd_solver="full" LOO is deterministic
+
+
+def test_repeated_texture_evidence_gate_uses_measurements_not_category_names() -> None:
+    from iadgen_v2.auto_mask.structure import evaluate_evidence_gate
+
+    passed, active = evaluate_evidence_gate(
+        "repeated_texture",
+        {"repeated_texture_score": 0.24, "category": "arbitrary_product"},
+        repeated_texture_threshold=0.20,
+    )
+    rejected, inactive = evaluate_evidence_gate(
+        "repeated_texture",
+        {"repeated_texture_score": 0.11, "category": "zipper"},
+        repeated_texture_threshold=0.20,
+    )
+
+    assert passed is True
+    assert active["reason"] == "score_meets_threshold"
+    assert rejected is False
+    assert inactive["reason"] == "score_below_threshold"
+
+
+def test_structure_profile_uses_rim_score_scale_without_false_ring_routing() -> None:
+    from iadgen_v2.auto_mask.structure import infer_structure_profile_from_measurements
+
+    assert (
+        infer_structure_profile_from_measurements(
+            repeated_texture_score=0.11,
+            rim_geometry_score=3.0,
+            boundary_contact=0.0,
+            elongation=1.0,
+        )
+        == "ring_sector"
+    )
+    assert (
+        infer_structure_profile_from_measurements(
+            repeated_texture_score=0.24,
+            rim_geometry_score=0.98,
+            boundary_contact=0.0,
+            elongation=1.0,
+        )
+        == "unknown"
+    )
+    assert (
+        infer_structure_profile_from_measurements(
+            repeated_texture_score=0.70,
+            rim_geometry_score=0.95,
+            boundary_contact=0.0,
+            elongation=1.0,
+        )
+        == "repeated_chain"
+    )
+    assert (
+        infer_structure_profile_from_measurements(
+            repeated_texture_score=0.24,
+            rim_geometry_score=0.98,
+            boundary_contact=1.0,
+            elongation=25.0,
+        )
+        == "thin_linear"
+    )
+
+
+def test_generic_structure_ignores_full_image_fallback_as_border() -> None:
+    from iadgen_v2.auto_masks import _generic_structure_attributes
+
+    image = Image.new("RGB", (64, 64), color=(128, 128, 128))
+    attributes = _generic_structure_attributes(image, (0, 0, 64, 64))
+
+    assert attributes["region_boundary_contact"] == 0.0
+    assert attributes["structure_profile"] != "edge_border"
+
+
+def test_generic_structure_prefers_thin_geometry_over_boundary_contact() -> None:
+    from iadgen_v2.auto_masks import _generic_structure_attributes
+
+    image = Image.new("RGB", (64, 64), color=(128, 128, 128))
+    attributes = _generic_structure_attributes(image, (30, 0, 34, 64))
+
+    assert attributes["region_boundary_contact"] == 1.0
+    assert attributes["structure_profile"] == "thin_linear"

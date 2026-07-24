@@ -25,7 +25,7 @@ from iadgen_v2.auto_mask.pipeline import run_generic_evidence_pipeline
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector
 from iadgen_v2.auto_mask.specialists import specialist_applicability
 from iadgen_v2.auto_mask.legacy_structure import infer_structure_attributes, infer_structure_profile
-from iadgen_v2.auto_mask.structure import infer_structure_profile_from_measurements
+from iadgen_v2.auto_mask.structure import evaluate_evidence_gate, infer_structure_profile_from_measurements
 from iadgen_v2.config import AppConfig, fingerprint
 from iadgen_v2.dataset import IMAGE_EXTENSIONS
 from iadgen_v2.masks import write_mask_overlay, write_pixel_refined_bbox_masks, write_refined_bbox_masks
@@ -10401,6 +10401,7 @@ def _run_generic_mask_artifacts(
     generic = auto.get("generic_evidence", {})
     if not isinstance(generic, dict):
         raise ValueError("auto_masks.generic_evidence must be a mapping")
+    structure_attributes = _generic_structure_attributes(image, region)
     providers: list[Any] = []
     if bool(generic.get("dinov2_enabled", True)):
         providers.append(
@@ -10415,7 +10416,16 @@ def _run_generic_mask_artifacts(
                 artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "dinov2_multiscale",
             )
         )
-    if bool(generic.get("pca_subspace_enabled", False)):
+    pca_enabled = bool(generic.get("pca_subspace_enabled", False))
+    pca_gate_mode = str(generic.get("pca_subspace_gate", "always"))
+    pca_gate_passed, pca_gate = evaluate_evidence_gate(
+        pca_gate_mode,
+        structure_attributes,
+        repeated_texture_threshold=float(generic.get("pca_subspace_repeated_texture_threshold", 0.20)),
+    )
+    pca_gate["enabled"] = pca_enabled
+    pca_gate["active"] = bool(pca_enabled and pca_gate_passed)
+    if pca_enabled and pca_gate_passed:
         providers.append(
             SubspacePcaDinoProvider(
                 model_id=str(auto.get("dinov2_model", "facebook/dinov2-small")),
@@ -10494,7 +10504,7 @@ def _run_generic_mask_artifacts(
         normal_paths=tuple(normal_paths[: int(generic.get("max_normals", 16))]),
         image_size=image.size,
         semantic_regions=tuple(dict.fromkeys(semantic_regions)),
-        semantic_attributes=_generic_structure_attributes(image, region),
+        semantic_attributes=structure_attributes,
         foreground=_generic_foreground(image, normal_paths),
         cache_key=fingerprint(
             {
@@ -10561,6 +10571,8 @@ def _run_generic_mask_artifacts(
     )
     artifacts["parameters"]["specialists"] = str(auto.get("specialists", "disabled"))
     artifacts["parameters"]["active_structural_specialists"] = sorted(specialist_masks)
+    artifacts["parameters"]["pca_subspace_gate"] = pca_gate
+    artifacts["structure_profile"] = str(structure_attributes["structure_profile"])
     return artifacts
 
 
@@ -10568,22 +10580,25 @@ def _generic_structure_attributes(image: Image.Image, region: tuple[int, int, in
     left, top, right, bottom = region
     width, height = max(1, right - left), max(1, bottom - top)
     aspect = max(width / height, height / width)
+    area_fraction = width * height / max(1, image.width * image.height)
     repeated = _repeated_texture_score(image)
     rim = _rim_geometry_score(image)
-    boundary_contact = float(left <= 2 or top <= 2 or right >= image.width - 2 or bottom >= image.height - 2)
+    touches_boundary = left <= 2 or top <= 2 or right >= image.width - 2 or bottom >= image.height - 2
+    # A full-image localization fallback says nothing about border topology.
+    boundary_contact = float(touches_boundary and area_fraction < 0.90)
     profile = infer_structure_profile_from_measurements(
         repeated_texture_score=repeated,
         rim_geometry_score=rim,
         boundary_contact=boundary_contact,
         elongation=aspect,
     )
-    area_fraction = width * height / max(1, image.width * image.height)
     scale = "micro" if area_fraction < 0.01 else "small" if area_fraction < 0.05 else "large"
     return {
         "structure_profile": profile,
         "scale": scale,
         "region_aspect": float(aspect),
         "region_area_fraction": float(area_fraction),
+        "region_boundary_contact": boundary_contact,
         "repeated_texture_score": float(repeated),
         "rim_geometry_score": float(rim),
     }

@@ -11,6 +11,7 @@ from PIL import Image, ImageDraw
 
 import iadgen_v2.auto_masks as auto_masks
 from iadgen_v2.auto_masks import (
+    _generic_candidate_comparison_entries,
     _prompt,
     musc_mutual_score_heatmap,
     patchcore_guided_heatmap,
@@ -38,6 +39,7 @@ from iadgen_v2.auto_masks import (
     write_residual_refined_bbox_masks,
     write_soft_patch_bbox_masks,
 )
+from iadgen_v2.auto_mask.contracts import AutoMaskRecord
 from iadgen_v2.config import load_config
 from iadgen_v2.dataset import prepare_splits
 from iadgen_v2.masks import write_refined_bbox_masks
@@ -58,6 +60,60 @@ def test_parse_qwen_bbox_payload_accepts_json_and_rejects_malformed() -> None:
         parse_qwen_bbox_payload("bbox: 1,2,3,4", (100, 50))
     with pytest.raises(ValueError, match="missing bbox_xyxy"):
         parse_qwen_bbox_payload('{"defect_type": "scratch"}', (100, 50))
+
+
+def test_generic_candidate_comparison_uses_current_candidate_families(tmp_path: Path) -> None:
+    modes = [
+        "fused_q850",
+        "fused_q900",
+        "edge_fused_q850_1",
+        "edge_fused_q900_1",
+        "sam2_fused_q850_1",
+        "fused_q950_component_1",
+    ]
+    paths = {}
+    for index, mode in enumerate(modes):
+        candidate_path = tmp_path / f"{mode}.png"
+        Image.new("L", (8, 8), 255 if index % 2 else 0).save(candidate_path)
+        paths[mode] = str(candidate_path)
+    row = AutoMaskRecord(
+        category="bottle",
+        defect_type="broken_small",
+        image_path=str(tmp_path / "input.png"),
+        mask_path=paths["fused_q850"],
+        provider="qwen",
+        prompt="",
+        description="",
+        qwen_text=None,
+        qwen_defect_type=None,
+        confidence=None,
+        evidence=None,
+        region_xyxy=(0, 0, 8, 8),
+        box_mask_path=paths["fused_q850"],
+        refined_mask_path=paths["fused_q850"],
+        inpaint_mask_path=paths["fused_q850"],
+        eval_mask_path=paths["fused_q850"],
+        training_mask_path=paths["fused_q850"],
+        uncertainty_mask_path=paths["fused_q850"],
+        mask_variant_paths={},
+        mask_variant_overlay_paths={},
+        overlay_path=None,
+        seed=1,
+        settings={
+            "selected_refinement": "fused_q850",
+            "candidate_refined_paths": paths,
+            "policy_scores": {mode: 1.0 - index * 0.1 for index, mode in enumerate(modes)},
+            "candidate_scores": {mode: index * 0.1 for index, mode in enumerate(modes)},
+        },
+    )
+
+    entries = _generic_candidate_comparison_entries(row)
+
+    selected_modes = [mode for _, mode, _ in entries]
+    assert selected_modes[0] == "fused_q850"
+    assert len(selected_modes) == len(set(selected_modes)) == 6
+    assert any(mode.startswith("edge_") for mode in selected_modes)
+    assert any(mode.startswith("sam2_") for mode in selected_modes)
 
 
 def test_parse_qwen_bbox_payload_recovers_truncated_json_like_output() -> None:
