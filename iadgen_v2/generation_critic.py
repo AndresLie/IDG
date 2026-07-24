@@ -315,9 +315,11 @@ def _defect_visibility_score(
 ) -> tuple[float, float]:
     """How visibly the in-mask edit reads as a defect (not just whether it changed).
 
-    Combines deviation magnitude, added edge/gradient structure, and local
-    contrast against a surrounding normal ring. A low-contrast smudge scores
-    low even at high coverage; a genuine defect scores high.
+    Every term is defined on the generated-minus-background CHANGE (never on
+    absolute generated intensity), so an unchanged high-contrast structure scores
+    ~0 and edits confined to the surrounding ring cannot raise the score. Terms:
+    in-mask change magnitude, added edge/gradient structure, and change contrast
+    of the mask against its ring. A faint smudge scores low even at high coverage.
     """
 
     active = refined > 0.05
@@ -326,13 +328,19 @@ def _defect_visibility_score(
     gen = np.asarray(generated, dtype=np.float32) / 255.0
     bg = np.asarray(background, dtype=np.float32) / 255.0
     gray_gen = _gray(gen)
+    gray_bg = _gray(bg)
     diff = np.abs(gen - bg).mean(axis=2)
     deviation = float(diff[active].mean())
-    grad_gain = float(np.clip((_gradient_magnitude(gray_gen) - _gradient_magnitude(_gray(bg)))[active], 0.0, None).mean())
+    grad_gain = float(np.clip((_gradient_magnitude(gray_gen) - _gradient_magnitude(gray_bg))[active], 0.0, None).mean())
+    # Change-based contrast: how much MORE the mask changed than its ring. Using
+    # the change map (|gen - bg|) rather than absolute intensity means a
+    # structured but unchanged region scores 0, and a ring-only edit (change
+    # concentrated outside the mask) yields a negative difference -> clamped to 0.
+    change = np.abs(gray_gen - gray_bg)
     ring = (_box_blur(active.astype(np.float32), radius=3) > 0.0) & (~active)
     reference_region = ring if ring.any() else (~active)
     if reference_region.any():
-        contrast = abs(float(gray_gen[active].mean()) - float(gray_gen[reference_region].mean()))
+        contrast = max(0.0, float(change[active].mean()) - float(change[reference_region].mean()))
     else:
         contrast = 0.0
     raw = (

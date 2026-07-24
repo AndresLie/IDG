@@ -1,7 +1,7 @@
 # IADGen v2 — Current Weaknesses and Improvement Plan (Merged)
 
-**Assessment date:** 2026-07-22
-**Reviewed branch:** `paired-edge-selector` at `e992272`
+**Assessment date:** 2026-07-23
+**Reviewed branch:** `paired-edge-selector` at `a7171af`
 **Scope:** the full picture — auto-mask/selector path, runtime caching, *and* the
 generation → downstream half. This document merges two reviews:
 
@@ -18,6 +18,14 @@ the tiny development cohorts are diagnostic, not confirmatory.
 ---
 
 ## 1. Executive summary
+
+> **Superseded in part — read §1a/§1b first.** This section is the *initial
+> merged audit* (pre-A-S1b), written before real-candidate recalibration. Its
+> conclusion that the branch shows "no quality improvement" and that the paired
+> gate doesn't fix the selector reflects the pre-recalibration state and is
+> superseded by the validated A-S1b/A-S2 results in §1a and the PCA probe in §1b.
+> §5.3 is the canonical status tracker. The audit below is retained for the
+> baseline framing and the Track-B findings, which still hold.
 
 The branch is functional, deterministic, and far faster than the earlier heavy
 pipeline (207 tests pass; selector artifact byte-reproducible; identical mask
@@ -112,29 +120,50 @@ The formal `freeze-architecture` release will be issued only when the mask gate
 passes or after the locked-category evaluation — whichever the project chooses;
 it must not be forced by lowering the gate.
 
-## 1b. Post-freeze evidence exploration — SubspaceAD PCA residual (2026-07-23)
+## 1b. Post-freeze evidence exploration — PCA residual (2026-07-23)
 
-Grounded in arXiv **2602.23013 (SubspaceAD)**: fit a PCA subspace to normal
-DINOv2 patch features, score test patches by reconstruction residual orthogonal
-to that subspace. Implemented as `SubspacePcaDinoProvider` (reuses the cached
-DINO tokens; default off via `generic_evidence.pca_subspace_enabled`).
+Commit `a7171af` adds a **SubspaceAD-inspired**, default-off PCA-residual
+provider: fit a subspace to normal DINOv2 patch features and score orthogonal
+reconstruction residual. It is useful research infrastructure, but it is not a
+faithful reproduction of [SubspaceAD](https://arxiv.org/abs/2602.23013). The
+official recipe uses DINOv2-with-registers giant, 672-pixel input, 30
+augmentations and 0.99 explained variance; this provider uses DINOv2-small,
+448-pixel input, no augmentation and 0.90 explained variance. Any paper claim
+must use the term *SubspaceAD-inspired adaptation* unless the official protocol
+is reproduced separately.
 
-A/B on the pilot (added to the fused evidence stack, deployed selector + widening):
+Exploratory A/B on the 18-image bottle/zipper pilot:
 
-| | oracle | selected Dice | regret |
+| Scope | Oracle Dice | Selected Dice | Regret |
 | --- | ---: | ---: | ---: |
-| zipper | 0.5750 → 0.5884 | **0.3832 → 0.5290 (+0.146)** | 0.192 → 0.059 |
-| bottle | 0.7630 → 0.7591 | 0.5615 → 0.5318 (−0.030) | 0.202 → 0.227 |
-| macro selected | — | **0.4724 → 0.5304 (+0.058)** | — |
+| Zipper | 0.5750 → 0.5884 (`+0.0134`) | **0.3832 → 0.5290 (`+0.1458`)** | 0.1919 → 0.0594 |
+| Bottle | 0.7630 → 0.7591 (`−0.0039`) | 0.5615 → 0.5318 (`−0.0297`) | 0.2015 → 0.2273 |
+| Macro | 0.6690 → 0.6738 (`+0.0048`) | **0.4724 → 0.5304 (`+0.0580`)** | 0.1967 → 0.1434 |
 
-Large win on the repeated structure (zipper), small regression on the
-non-periodic object (bottle). **Kept default-off** (fails the no-collateral bar
-for a default flip). **Next refinement:** gate PCA-subspace evidence by the same
-measured repeated-texture trigger as the widening (≥0.17) — apply where it wins,
-skip where it hurts — to bank the zipper gain without the bottle cost. Other
-grounded levers pulled from arXiv, mapped to measured gaps: HyperFSAD sparse
-hyper-matching (distractor suppression), UniVAD component clustering (localization
-without a Qwen box), FADE CLIP prompts (the missing vision-language cue).
+**Professional interpretation:** this is a mixed, development-only result, not
+yet evidence that PCA raises the proposal ceiling. Adding a provider
+renormalizes fusion weights and replaces the fused map; the enabled pool is not
+a strict superset of the baseline pool. Therefore an oracle change cannot
+cleanly separate new PCA signal from dilution of existing evidence. The selected
+gain is concentrated in zipper, bottle regresses, and the selector was not
+calibrated specifically on PCA-perturbed candidates.
+
+The runtime claim also needs correction. Normal DINO tokens are reused, but the
+PCA basis plus leave-one-normal-out calibration are fitted again per target
+image. Live provider timings during the pilot were roughly 73–78 seconds per
+image; the run artifacts were later cleaned, so this timing must be reproduced
+in a durable report before a performance claim.
+
+**Decision:** keep the provider default-off. Do not immediately gate it using
+the bottle/zipper-separating repetition threshold; that would turn an observed
+category split into a rule without category-held-out evidence. Permit one
+bounded PCA follow-up only after the provider (1) caches the fitted basis and
+calibration per content-hashed normal set, (2) removes the fabricated
+`augmentation_consistency=0.75` value, (3) preserves the complete baseline
+candidate family as a strict subset, and (4) evaluates the gate with nested
+leave-category-out validation. Archive the route if macro oracle gain remains
+below `0.01` or any held-out category regresses by more than `0.01` selected
+Dice.
 
 ## 2. Confirmed strengths (protect these)
 
@@ -229,44 +258,37 @@ Paths below are repository-relative.
 
 ### Track A — mask / selector / runtime
 
-**A1. Selector calibration is the dominant quality bottleneck.**
-Heavy oracle Dice `0.5545` vs selected `0.3737`; regret concentrated in
-`broken_large` (0.5015) and `broken_teeth` (0.3957). Expected-IoU is not merely
-mis-scaled, it is **inverted**: `broken_large` predicted 0.6115 / actual 0.1787;
-`broken_small` predicted 0.0733 / actual 0.6643. The paired gate governs only
-edge-vs-parent; once eligible, an edge candidate still competes against a
-stronger non-edge candidate through this unreliable absolute selector.
+**A1. The selector bottleneck improved but is not closed.** Real-candidate
+recalibration reduced leave-category-out regret `0.1985 → 0.1074`, but the
+result still narrowly misses the original `≤0.10` engineering gate. More
+important, all evidence is development-category evidence; no locked-category
+result exists.
 
-**A2. Proposal recall is zero for `zipper/split_teeth`.** Selected and oracle
-Dice both 0.0 — selection cannot repair it.
+**A2. The main gain is not yet externally confirmed.** A-S1b and A-S2 improved
+category-held-out development metrics, but the untouched ten-category MVTec run
+is unavailable. The full-dev diagnostic (`0.4723`) must not be presented as
+generalization; the leave-category-out estimate (`0.5088`) is the strongest
+current figure.
 
-**A3. Heavy evidence raises recall by over-segmenting.** Recall 0.5672 but
-precision 0.3231; `broken_large` recall 0.97 / precision 0.18.
+**A3. PCA evidence is mixed and experimentally confounded.** The pilot improves
+macro selected Dice by `0.0580`, driven by zipper, while bottle regresses
+`0.0297`. Macro oracle changes only `+0.0048`; provider fusion replaces the
+baseline fused map rather than adding a strict candidate superset. The current
+provider also refits PCA/LOO calibration per image at roughly 73–78 s/image.
 
-**A4. Qwen localization is unreliable on half the cohort.** 3/6 valid; the rest
-fall back to full-image.
+**A4. QC is still not actionable.** In the PCA A/B, every one of the 18 outputs
+was marked `warning`, so the status does not separate strong masks from risky
+ones. Risk-coverage/selective-Dice evidence is missing.
 
-**A5. Internal QC does not discriminate usable from unusable masks.** All six
-outputs are `warning`, including the strong `broken_small` (0.798) and the total
-`split_teeth` failure (0.0).
+**A5. The evidence stack remains too costly and unevenly cached.** The validated
+DINO cache/GPU KNN mechanism is sound, but MuSc remains the heavy cold path and
+the new PCA model/calibration has no per-normal-set fit cache.
 
-**A6. MuSc is the cold-runtime bottleneck.** DINO ~2.2–3.68 s (cached); MuSc
-18.9–111.3 s/image; registered residual ~8.7–9.7 s.
-
-**A7. Cache and device contracts are not hardened.** GPU KNN ignores an explicit
-CPU device; the in-process token key is path-based (stale on same-path content
-change); the disk key omits resolved model revision / processor identity;
-token-cache writes are non-atomic. These are merge blockers for the affected
-runtime changes because they can silently select the wrong backend or reuse stale
-evidence.
-
-**A8. Experiment packaging is incomplete.** `configs/ab_edge_heavy.yaml` and
-`configs/ab_edge_refine_on_v3.yaml` are untracked; the inference manifest does
-not declare the selector-training manifest / hash as a parent input.
-
-**A9. Reporting/runtime warnings reduce confidence.** Hardcoded "three
-deterministic samples per defect type"; torchvision non-writable-array warning;
-warm-cache timing mistaken for throughput.
+**A6. Experiment packaging is incomplete.** Selector parent lineage is not
+consistently declared in inference manifests; temporary A/B artifacts were
+cleaned after summary metrics were copied into the report; the working tree
+still contains unrelated untracked/deleted files. Confirmatory runs need durable
+configs, manifests, logs and per-image metrics.
 
 ### Track B — generation / downstream
 
@@ -281,8 +303,19 @@ and +0.0612 (paired t ≈ 0.73, n=3). Neither is confirmatory. PatchCore dominat
 coverage 0.3082, but mean visibility is 0.0551; audited crack shows no crack and
 the scratch is a smudge.
 
-**B3. Downstream evaluation lacks rigor.** No PatchCore-free ablation; no matched
-compute; no preregistration; no bootstrap CIs; tiny-U-Net unstable.
+**B3. The replacement visibility metric is not yet valid on structured
+backgrounds.** Its contrast term compares absolute generated-region intensity
+with a surrounding ring. An unchanged high-contrast structure can therefore
+score as visible despite zero edit magnitude. Existing unit tests use a uniform
+background and do not cover this failure mode.
+
+**B4. The empirical controller audit is blocked.** The mechanism and plumbing
+exist, but the pinned SD1.5 inpainting weights are not cached in the offline
+environment.
+
+**B5. Downstream evaluation lacks rigor.** No PatchCore-free ablation; no matched
+compute; no preregistration; no hierarchical bootstrap CIs; tiny-U-Net is
+unstable.
 
 ### Cross-cutting
 
@@ -291,10 +324,216 @@ compute; no preregistration; no bootstrap CIs; tiny-U-Net unstable.
 evidence. **C2.** `auto_masks.py` ~10.9k-line monolith blocks controlled
 experiments. **C3.** Track B consumes masks produced by Track A; without a frozen
 mask manifest, parallel changes confound generation/downstream comparisons.
+**C4.** Multiple roadmap documents contain stale, contradictory status; §5 of
+this report is now the canonical execution plan.
 
 ---
 
-## 5. Improvement plan — sprint checkpoints
+## 5. Updated research plan — canonical as of 2026-07-23
+
+This section supersedes the execution order and go/no-go language in the
+historical appendix below, as well as the immediate-order sections in
+`v3_research_sprint_plan.md` and `generalization_first_improvement_plan.md`.
+Those documents remain useful architectural history, but their status tables
+predate the validated A-S1b/A-S2 results.
+
+### 5.1 Research position
+
+The most defensible primary contribution is now:
+
+> **Real-candidate calibration reduces synthetic-to-real selector error and
+> converts proposal improvements that were previously unusable into selected
+> pseudo-mask gains, with abstention for residual risk.**
+
+This is stronger and more specific than “a large multimodel stack improves
+industrial segmentation.” The evidence already supports the mechanism:
+synthetic selector augmentation failed, real-candidate recalibration improved
+MAE/correlation/regret, and the same widening operator changed from harmful to
+helpful after recalibration.
+
+The research questions should be frozen as:
+
+1. **RQ1 — calibration:** Does development-supervised real-candidate
+   calibration generalize to unseen product categories better than
+   synthetic-corruption training?
+2. **RQ2 — conversion:** Does calibrated selection convert proposal-ceiling
+   gains into selected-Dice gains without sacrificing risk coverage?
+3. **RQ3 — synthesis:** After visible-defect quality control, does synthetic
+   data improve an independent student over a matched normal-only control?
+
+Label the method accurately. Because development official masks are used after
+candidate generation to calibrate the selector, the selector is
+**development-supervised / label-efficient with category-held-out
+generalization**, not fully unsupervised.
+
+### 5.2 What the newest research changes
+
+- [SubspaceAD](https://arxiv.org/abs/2602.23013) justifies PCA residual as a
+  strong *standalone few-shot baseline*, not automatic inclusion in a fused
+  stack. Reproduce its official protocol separately if making a comparison.
+- [RadioCore](https://openaccess.thecvf.com/content/CVPR2026W/VISION26/html/Ali_RadioCore_Few-Shot_Industrial_Anomaly_Segmentation_with_Multi-Scale_Radio_ViT_Features_CVPRW_2026_paper.html)
+  reinforces the value of multi-scale foundation features, but its public
+  repository currently says “coming soon.” Treat it as a literature comparator,
+  not a dependency or another provider to implement now.
+- [Boxes2Pixels](https://openaccess.thecvf.com/content/CVPR2026W/AI4RWC/html/Lendering_Boxes2Pixels_Learning_Defect_Segmentation_from_Noisy_SAM_Masks_CVPRW_2026_paper.html)
+  supports treating SAM pseudo-masks as a noisy teacher. If a student is trained
+  later, uncertainty pixels should be ignored/down-weighted and background
+  supervision should permit one-sided correction; pseudo-masks must not be
+  treated as clean ground truth.
+- [MIRAGE](https://openaccess.thecvf.com/content/CVPR2026W/VAND/html/Hu_MIRAGE_Model-agnostic_Industrial_Realistic_Anomaly_Generation_and_Evaluation_for_Visual_CVPRW_2026_paper.html)
+  evaluates anomaly generation on two independent axes: downstream utility and
+  perceptual quality/human judgment. Track B should adopt that split because the
+  current coverage proxy already demonstrated that a scalar critic can be
+  gamed.
+
+The practical consequence is a **feature freeze**: no new evidence family,
+backbone, prompt module or category specialist enters the default pipeline
+before the locked-category run. New papers become external baselines or
+post-confirmation ablations, not automatic implementation tasks.
+
+### 5.3 Canonical sprint tracker
+
+| Sprint | Vertical slice | Status | Evidence / contract | Exit decision |
+| --- | --- | --- | --- | --- |
+| **R0** | Validated checkpoint + PCA closure | 🟡 In progress | `99b7000` is the sealed checkpoint; `a7171af` adds default-off PCA infrastructure. Record the mixed result and retain the baseline candidate pool unchanged. | Close when the PCA result, runtime limitation and non-faithful-protocol caveat are durable. Do not enable PCA by default. |
+| **R1** | Selector contribution evidence pack | ⬜ Next | Freeze candidate/config/model hashes; compare synthetic selector, real-calibrated selector, and real-calibrated+widening with leave-category-out predictions. | Proceed to a primary selector claim only if hierarchical paired intervals support lower regret and higher selected Dice. |
+| **R2** | Locked data + runtime environment unlock | 🚧 External setup | Acquire the 10 untouched MVTec categories, an external dataset, and the pinned SD1.5 cache; hash inventories before any run. | No thresholds or architecture changes after locked masks become readable. |
+| **R3** | Locked-category mask confirmation | ⬜ Blocked by R2 | Run the frozen baseline and validated checkpoint once; official masks are evaluation-only. PCA remains off. | A generalization claim requires a positive paired effect across categories, not only a high development score. Report a null or collapse without tuning locked categories. |
+| **R4** | Visibility critic validity + generation re-audit | ⬜ Blocked by R2 | First repair/test the critic contract on structured unchanged backgrounds; then run baseline vs visibility controller with blind human review. | Keep the controller only if metric change, human judgment, leakage and texture preservation agree. |
+| **R5** | Independent synthetic-utility ablation | ⬜ After R4 | Same student ±synthetic, PatchCore fusion removed, matched steps, five seeds, fixed ratios, hierarchical bootstrap; include strong normal-only references. | Promote synthesis only if a preregistered regime has a positive interval. Otherwise report the null and make synthesis secondary. |
+| **R6** | External baselines + paper package | ⬜ After R3/R5 | VisA/MVTec AD 2, official SubspaceAD reproduction, calibration-size curves, risk-coverage plots, manifests and failure sheets. | Claims must match the strongest completed evidence tier. |
+
+### 5.4 Sprint R0 — close the PCA probe correctly
+
+The current selected-Dice gain is large enough to record, but not clean enough
+to deploy. The immediate engineering contract is:
+
+- keep `pca_subspace_enabled: false` in every production/frozen config;
+- rename it “SubspaceAD-inspired” in reports and code-facing documentation;
+- replace `augmentation_consistency=0.75` with `None` unless consistency is
+  measured;
+- cache the PCA basis and leave-one-out calibration once per content-hashed
+  normal set before any rerun;
+- add unit-normalized subtle-anomaly, one-normal, cache
+  reuse/invalidation, deterministic-LOO, and default-off/on assembly tests;
+- make a future PCA test **strictly additive**: preserve every baseline candidate
+  and append PCA-only/PCA-augmented candidates instead of replacing the fused
+  map.
+
+This is not the highest-priority experiment. If locked data remain unavailable,
+one nested leave-category-out periodicity-gate experiment is allowed as bounded
+fallback work. Predeclare the gate and stop if macro oracle gain is `<0.01`, the
+selected-Dice interval includes zero, or any held-out category regresses
+`>0.01`. Do not iterate the threshold on bottle/zipper.
+
+### 5.5 Sprint R1 — package the main selector contribution
+
+Build one reproducible command/report that emits:
+
+- candidate-pool identity and selector parent hashes;
+- leave-category-out MAE, Pearson correlation, mean regret and selected Dice;
+- per-category and per-morphology paired deltas with hierarchical bootstrap
+  intervals;
+- calibration curves and calibration-set-size curves;
+- risk-coverage/selective-Dice curves for abstention;
+- the pre-recalibration, A-S1b, and A-S1b+A-S2 variants on identical candidate
+  pools wherever the comparison requires identical pools.
+
+Use `0.1074` regret as the measured result, not “low regret” without
+qualification. It is the **144-image leave-category-out OOF calibration regret**;
+the deployed 18-image pilot regret is higher (~0.16–0.20). It narrowly misses the
+original `≤0.10` engineering gate.
+Do not tune further on bottle/zipper merely to cross that round number. The
+scientific gate is a reproducible category-held-out improvement with uncertainty
+reported.
+
+### 5.6 Sprints R2–R3 — locked confirmation before more architecture
+
+Before data acquisition, write and hash a preregistration containing the
+category split, primary endpoint, bootstrap unit, exclusions and failure policy.
+Then run:
+
+1. frozen pre-recalibration selector;
+2. real-candidate-calibrated selector;
+3. calibrated selector plus measured widening;
+4. strong standalone normal-only baselines, including the official SubspaceAD
+   implementation if its model/cache is available.
+
+Report search-region recall, oracle Dice, selected Dice, regret, calibration,
+coverage, selective risk, runtime and peak memory. The existing absolute targets
+(macro Dice `≥0.55`, worst category `≥0.30`) remain engineering aspirations, not
+publication filters. The research success criterion is a positive
+category-aware paired interval for the validated checkpoint versus the frozen
+baseline, with failure categories disclosed.
+
+### 5.7 Sprint R4 — validate the critic before spending SD compute
+
+The current visibility score still includes absolute contrast between the
+generated mask region and its surrounding ring. On a structured but unchanged
+object this can be high even when generated and background images are identical.
+Before the SD1.5 re-audit:
+
+- define visibility entirely from **generated-minus-background change** inside
+  the mask, added/removed gradient energy, and change relative to a ring;
+- add an identity test on a high-contrast structured background that must score
+  near zero;
+- use morphology-specific lower **and upper** visibility/fidelity bands so a
+  destructive edit cannot win merely by being stronger;
+- validate critic–human alignment on a stratified sample and report rank
+  correlation plus disagreement cases;
+- run a blinded two-reviewer study alongside automated metrics.
+
+The keep gate is joint: visibility improves with a stratified 95% interval
+excluding zero, at least 80% of accepted samples are judged visibly
+defect-like by both reviewers, and leakage/texture preservation regress by no
+more than `0.01`. If critic and human judgments disagree materially, stop and
+repair the metric rather than tune the generator against it.
+
+### 5.8 Sprint R5 — make or break the synthesis claim
+
+Run the clean ablation already identified:
+
+- identical student initialization family and matched optimization steps;
+- normal-only versus normal+synthetic, with PatchCore teacher fusion disabled;
+- five seeds, fixed synthetic ratios selected only on development data;
+- hierarchical bootstrap over categories/images and seed-wise paired deltas;
+- report pixel AP/AUPRO, image AUROC, Dice at a development-fixed threshold,
+  predicted-positive rate and per-category regressions;
+- evaluate perceptual quality separately from downstream utility.
+
+If no preregistered regime beats normal-only with a 95% interval excluding zero,
+the honest conclusion is valuable: synthesis is an optional/niche augmentation
+path, while calibrated pseudo-mask selection remains the primary contribution.
+
+### 5.9 Execution order and stop conditions
+
+1. Finish R0 documentation; do not turn it into another tuning loop.
+2. Build R1 now—it uses assets already present and packages the strongest
+   contribution.
+3. In parallel operationally, acquire/hash the locked datasets and pinned model
+   caches for R2.
+4. Run R3 before enabling any new default evidence or specialist.
+5. Fix the visibility metric contract, then run R4 when SD1.5 is available.
+6. Run R5 only on a generation corpus that passes R4.
+7. Build R6 from completed evidence, including null results.
+
+| Observation | Required decision |
+| --- | --- |
+| PCA strict-additive/LCO oracle gain `<0.01` | Archive PCA as a negative/mixed ablation; keep default off. |
+| Selector gain disappears on locked categories | Narrow the claim to development calibration; do not tune the locked set. |
+| Locked failures correlate with specialist/category cues | Remove those cues and define a new future split; do not reuse the exposed locked set for confirmation. |
+| Visibility metric disagrees with blind reviewers | Invalidate the critic gate and repair the metric before generation tuning. |
+| Synthetic utility interval includes zero | Reposition synthesis as secondary; do not claim that synthetic data improves detection. |
+| Strong standalone baseline dominates the fused system | Report it and refocus the contribution on calibration/selection where supported. |
+
+---
+
+## Appendix A. Historical improvement plan — superseded
+
+The checklist below is retained for provenance. Its open/blocked states are not
+the current execution order; use §5.3 for status.
+
+### A.1 Former improvement plan — sprint checkpoints
 
 Contract-first vertical slices. A slice is `Done` only when every acceptance box
 is checked. Track A and Track B may touch mostly separate code, but they are
@@ -557,7 +796,7 @@ prepare→phase2→phase3→phase4 and compare visibility + blind review.
 
 ---
 
-## 6. Execution order
+### A.2 Former execution order
 
 Conditional parallelism: freeze and hash the Track-A mask artifact consumed by
 Track B. If masks must change, rerun affected Track-B stages after Track A
@@ -575,7 +814,7 @@ it **together** (avoid another "implemented but not demonstrated" landing).
 6. [ ] **A-S6 + B-S2** full 18-image paired mask experiment + preregistered ablation
 7. [ ] **X1 / X2** locked/external evaluation + modularization (architecture frozen first)
 
-## 7. Go/no-go before merging or enabling edge refinement by default
+### A.3 Former go/no-go before merging or enabling edge refinement by default
 
 - [ ] Overall selected Dice exceeds edge-off by `≥ 0.015` on the full 18-image cohort, with the improvement's 95% bootstrap CI excluding zero
 - [ ] No development category regresses by more than `0.01` Dice
@@ -585,7 +824,7 @@ it **together** (avoid another "implemented but not demonstrated" landing).
 - [ ] Cold `< 30 s/image`, warm `< 5 s/image`; runs warning-free, manifest-linked, byte-reproducible
 - [ ] (Track B) accepted synthetic sample shows visible defect structure; downstream benefit confirmed with a CI excluding zero, or the null reported
 
-## 8. Final recommendation
+### A.4 Former final recommendation
 
 Do not merge or market the current branch as a mask-quality improvement. Retain
 the runtime changes because their performance mechanism is validated, but merge
@@ -596,7 +835,7 @@ the gate on any Track-D ("synthetic augmentation helps") claim; run them in
 parallel only against a frozen mask manifest. The mask work alone does not make
 that claim defensible.
 
-## 9. Stop/go honesty
+### A.5 Former stop/go honesty
 
 - If B-S2 shows synthetic never beats normal-only on these categories, that is a
   legitimate result: reposition synthesis as niche augmentation, not the main

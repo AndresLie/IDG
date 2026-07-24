@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 from iadgen_v2.generation_critic import score_generation
@@ -87,3 +88,37 @@ def test_generation_critic_rejects_clean_output_and_accepts_visible_mask_edit() 
     assert visible.accepted
     assert visible.adaptive_mask_coverage_score >= 0.35
     assert visible.leakage_score >= 0.45
+
+
+def test_visibility_is_zero_on_structured_unchanged_background() -> None:
+    # High-contrast structure (dark|light split) with the mask straddling the
+    # edge, and the generated image identical to the background (no edit).
+    arr = np.zeros((32, 32, 3), dtype=np.uint8)
+    arr[:, :16] = 40
+    arr[:, 16:] = 210
+    bg = Image.fromarray(arr, "RGB")
+    mask = Image.new("L", bg.size, 0)
+    ImageDraw.Draw(mask).rectangle((8, 8, 23, 23), fill=255)  # spans the structure edge
+    scores = score_generation(bg.copy(), bg, mask, mask, {"critic_image_size": 160}, require_reference=False)
+    assert scores.defect_visibility_score < 0.05  # unchanged structure must not read as visible
+
+
+def test_visibility_not_increased_by_ring_only_edit() -> None:
+    background = Image.new("RGB", (48, 48), (128, 128, 128))
+    mask = Image.new("L", background.size, 0)
+    ImageDraw.Draw(mask).rectangle((18, 18, 29, 29), fill=255)  # central mask
+    settings = {"critic_image_size": 160}
+
+    # Edit only OUTSIDE the mask (a bright frame in the ring); mask region untouched.
+    ring_only = background.copy()
+    d = ImageDraw.Draw(ring_only)
+    d.rectangle((10, 10, 37, 37), outline=(230, 30, 30), width=3)  # sits in the ring, not the mask
+    ring_scores = score_generation(ring_only, background, mask, mask, settings, require_reference=False)
+
+    # A genuine in-mask edit for comparison.
+    in_mask = background.copy()
+    in_mask.paste(Image.new("RGB", background.size, (210, 30, 30)), mask=mask)
+    in_mask_scores = score_generation(in_mask, background, mask, mask, settings, require_reference=False)
+
+    assert ring_scores.defect_visibility_score < 0.15                       # ring-only barely registers
+    assert in_mask_scores.defect_visibility_score > ring_scores.defect_visibility_score + 0.3

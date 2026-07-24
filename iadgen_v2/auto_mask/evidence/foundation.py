@@ -500,7 +500,7 @@ class SubspacePcaDinoProvider:
             values=probability,
             reliability=reliability,
             calibration=used,
-            augmentation_consistency=0.75,
+            augmentation_consistency=None,  # not measured; do not fabricate a value
             metadata={
                 "scale": int(self.scale),
                 "layers": list(self.layers),
