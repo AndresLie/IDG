@@ -1,7 +1,7 @@
 # IADGen v2 — Current Weaknesses and Improvement Plan (Merged)
 
-**Assessment date:** 2026-07-23
-**Reviewed branch:** `paired-edge-selector` at `a7171af`
+**Assessment date:** 2026-07-24
+**Reviewed branch:** `paired-edge-selector` at `ecf1a3f`
 **Scope:** the full picture — auto-mask/selector path, runtime caching, *and* the
 generation → downstream half. This document merges two reviews:
 
@@ -195,6 +195,64 @@ localizes the next lever to selection quality on the union pool, not the PCA
 provider — and confirms the macro result is **power-limited on 5 categories**, so
 R2/R3 (locked categories) remains the decisive unlock. Reproduce:
 `scripts/evaluate_additive_pca_loco.py` on `configs/as1b_calib_widen_pca_additive.yaml`.
+
+## 1d. Locked-category confirmation (2026-07-24)
+
+The network/data blocker was removed and the preregistered ten-category MVTec
+locked run completed:
+
+```text
+839 anomaly images
+29,584 sealed candidates
+specialists disabled
+PCA disabled
+official masks opened only after runtime outputs were finalized
+```
+
+The frozen runtime result is below the architecture release targets:
+
+| Metric | Locked result |
+| --- | ---: |
+| Category-macro Dice | `0.3171` |
+| Worst category Dice (`screw`) | `0.1170` |
+| Category-macro search-region recall | `0.7162` |
+| Accepted-mask coverage | `0.7306` |
+| Category-macro pixel AUROC | `0.9481` |
+| Category-macro AUPRO | `0.8548` |
+| Category-macro pixel AP | `0.4032` |
+
+The primary selector claim passes on the identical locked candidate pool:
+
+| Fixed selector | Macro Dice | Oracle Dice | Regret | Candidate MAE | Pearson |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Synthetic-corruption baseline | `0.2208` | `0.5615` | `0.3407` | `0.1267` | `0.2472` |
+| Real-candidate nonwidened | **`0.3292`** | `0.5615` | **`0.2323`** | **`0.0964`** | **`0.5426`** |
+| Real-candidate widened/deployed | `0.3161` | `0.5615` | `0.2455` | `0.0968` | `0.5224` |
+
+Preregistered widened-real minus synthetic selector macro-Dice delta:
+**`+0.0952`, 95% CI `[+0.0450, +0.1440]`**, P(≤0) `0.0001`,
+wins/ties/losses `479/176/184`.
+
+**Interpretation:** real-candidate calibration generalizes and is now the
+supported primary contribution. The full architecture does not generalize at
+release quality. The `0.5615` candidate oracle versus `0.3161` selected Dice
+leaves `0.2455` regret, so selection remains the largest recoverable gap.
+Search-region recall `0.7162` is a second independent bottleneck. High recall
+and low precision, especially screw (`0.8027` recall, `0.0929` precision), show
+that over-segmentation is the dominant binary-mask error.
+
+The nonwidened selector outperforming the widened selector on the same widened
+pool means the widening-specific development win did not transfer cleanly.
+Do not tune that policy on the exposed locked categories.
+
+Primary artifacts:
+
+```text
+locked_generalization_preregistration.yaml
+reports/v3_generic_evidence_locked/locked_evaluation/v3-generic-evidence-frozen-20260723/
+reports/r3_locked_confirmation/locked_candidate_pool_analysis.md
+reports/r3_locked_confirmation/locked_result_review.md
+```
 
 ## 2. Confirmed strengths (protect these)
 
@@ -428,8 +486,8 @@ post-confirmation ablations, not automatic implementation tasks.
 | --- | --- | --- | --- | --- |
 | **R0** | Validated checkpoint + PCA closure + correctness | ✅ Done (`e34a433`) | `99b7000` sealed checkpoint; `a7171af` default-off PCA. `e34a433` makes visibility contrast change-based, sets PCA `augmentation_consistency=None`, adds acceptance tests. PCA stays off by default. | Closed: PCA result, runtime limitation and change-based visibility contract are durable. |
 | **R1** | Selector contribution evidence pack | ✅ Done (`755e14a`, `5b1850c`) | `scripts/build_selector_evidence_pack.py` (reporting only; deployed selector untouched). Hash-verified identical pools; synthetic vs real-LCO on non-widened (delta +0.0911 [0.0277,0.1757]) and widened (+0.1943 [0.1005,0.3007], all 5 categories exclude zero); selected Dice, per-category/per-morphology hierarchical intervals, calibration-size + reliability + risk-coverage curves. | Primary selector claim supported: hierarchical paired intervals show lower regret and higher selected Dice on both pools. |
-| **R2** | Locked data + runtime environment unlock | 🚧 External setup | Acquire the 10 untouched MVTec categories, an external dataset, and the pinned SD1.5 cache; hash inventories before any run. | No thresholds or architecture changes after locked masks become readable. |
-| **R3** | Locked-category mask confirmation | ⬜ Blocked by R2 | Run the frozen baseline and validated checkpoint once; official masks are evaluation-only. PCA remains off. | A generalization claim requires a positive paired effect across categories, not only a high development score. Report a null or collapse without tuning locked categories. |
+| **R2** | Locked data + runtime environment unlock | 🟡 MVTec unlocked (`a614061`, `ecf1a3f`) | Ten locked MVTec categories acquired and hash-inventoried; runtime/reference isolation verified. External dataset and pinned SD1.5 cache remain open. | Locked MVTec slice complete without post-access behavior changes. |
+| **R3** | Locked-category mask confirmation | ✅ Primary confirmation complete | 839 images, 29,584 candidates. Locked macro Dice `0.3171`; oracle `0.5615`. Real-widened selector beats synthetic selector `+0.0952`, CI `[+0.0450,+0.1440]`; full release targets fail. | Selector contribution confirmed; architecture release rejected. No tuning on exposed categories. |
 | **R4** | Visibility critic validity + generation re-audit | ⬜ Blocked by R2 | First repair/test the critic contract on structured unchanged backgrounds; then run baseline vs visibility controller with blind human review. | Keep the controller only if metric change, human judgment, leakage and texture preservation agree. |
 | **R5** | Independent synthetic-utility ablation | ⬜ After R4 | Same student ±synthetic, PatchCore fusion removed, matched steps, five seeds, fixed ratios, hierarchical bootstrap; include strong normal-only references. | Promote synthesis only if a preregistered regime has a positive interval. Otherwise report the null and make synthesis secondary. |
 | **R6** | External baselines + paper package | ⬜ After R3/R5 | VisA/MVTec AD 2, official SubspaceAD reproduction, calibration-size curves, risk-coverage plots, manifests and failure sheets. | Claims must match the strongest completed evidence tier. |
