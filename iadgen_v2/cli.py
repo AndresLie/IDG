@@ -84,6 +84,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = commands.add_parser("prepare-locked-benchmark")
     sub.add_argument("--config", required=True, type=Path)
     sub.add_argument("--source-root", required=True, type=Path)
+    sub.add_argument("--download-source", action="store_true")
     sub = commands.add_parser("freeze-architecture")
     sub.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
@@ -178,7 +179,11 @@ def _execute_command(args: argparse.Namespace, config: AppConfig, manifest_path:
     if args.command == "prepare-locked-benchmark":
         from iadgen_v2.locked_dataset import prepare_locked_benchmark
 
-        return "locked runtime dataset manifest written to", prepare_locked_benchmark(config, source_root=args.source_root)
+        return "locked runtime dataset manifest written to", prepare_locked_benchmark(
+            config,
+            source_root=args.source_root,
+            download_source=args.download_source,
+        )
     if args.command == "freeze-architecture":
         from iadgen_v2.architecture_freeze import freeze_generic_architecture
 

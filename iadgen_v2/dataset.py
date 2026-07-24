@@ -94,12 +94,25 @@ def load_manifest(config: AppConfig) -> dict[str, object]:
 def download_categories(root: Path, categories: list[str]) -> None:
     archive_dir = root / "_archives"
     archive_dir.mkdir(parents=True, exist_ok=True)
+    unconfigured_categories = sorted(category for category in categories if category not in MVTEC_URLS)
+    if unconfigured_categories:
+        print(
+            "no direct category URL configured for "
+            f"{', '.join(unconfigured_categories)}; using full-archive mirror",
+            flush=True,
+        )
+        _download_from_mirror(
+            root,
+            archive_dir,
+            categories,
+            [],
+            unconfigured_categories=unconfigured_categories,
+        )
+        return
     failed_official_urls: list[str] = []
     for category in categories:
         if (root / category).exists():
             continue
-        if category not in MVTEC_URLS:
-            raise ValueError(f"No configured MVTec AD download URL for category: {category}")
         archive = archive_dir / f"{category}.tar.xz"
         if not archive.exists():
             print(f"downloading MVTec AD {category} to {archive}", flush=True)
@@ -118,7 +131,14 @@ def download_categories(root: Path, categories: list[str]) -> None:
         write_json(root / "download_source.json", {"official_failures": failed_official_urls})
 
 
-def _download_from_mirror(root: Path, archive_dir: Path, categories: list[str], official_failures: list[str]) -> None:
+def _download_from_mirror(
+    root: Path,
+    archive_dir: Path,
+    categories: list[str],
+    official_failures: list[str],
+    *,
+    unconfigured_categories: list[str] | None = None,
+) -> None:
     archive = archive_dir / "mvtec_anomaly_detection.tar.xz"
     if not archive.exists():
         print(f"downloading MVTec AD fallback archive to {archive}", flush=True)
@@ -130,6 +150,7 @@ def _download_from_mirror(root: Path, archive_dir: Path, categories: list[str], 
         {
             "official_dataset_page": "https://www.mvtec.com/research-teaching/datasets/mvtec-ad",
             "official_category_links_unavailable": official_failures,
+            "direct_category_links_unconfigured": unconfigured_categories or [],
             "fallback_mirror": MVTEC_MIRROR_ARCHIVE_URL,
             "extracted_categories": categories,
             "license": "CC BY-NC-SA 4.0",

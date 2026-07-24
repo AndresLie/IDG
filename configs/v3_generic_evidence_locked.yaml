@@ -41,11 +41,12 @@ evaluation:
 
 research_governance:
   enabled: true
-  architecture_tag: v3-generic-evidence-rc1
+  architecture_tag: v3-generic-evidence-frozen-20260723
   experiment_track: locked-generalization
   development_categories: [bottle, zipper, wood, metal_nut, tile]
   locked_categories: [carpet, cable, capsule, grid, hazelnut, leather, pill, screw, toothbrush, transistor]
   locked_official_mask_roots: [data/locked_official_reference_masks]
+  locked_preregistration_path: locked_generalization_preregistration.yaml
   frozen_architecture_manifest: reports/v3_generic_evidence_development/architecture_freeze/v3-generic-evidence-rc1.json
   enforce_official_mask_isolation: true
   dataset_fingerprint_mode: sha256
@@ -83,15 +84,16 @@ auto_masks:
   dinov2_device: auto
   selector_model_path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.joblib
   generic_evidence:
+    edge_refine: true
     dinov2_enabled: true
-    dinov2_scales: [448, 672]
+    dinov2_scales: [448]
     dinov2_layers: [-4, -1]
-    dinov2_memory_stride: 1
-    registered_residual_enabled: true
+    dinov2_memory_stride: 4
+    registered_residual_enabled: false
     registration_scale: 448
     registration_min_inlier_ratio: 0.25
     registration_max_reprojection_error: 8.0
-    musc_enabled: true
+    musc_enabled: false
     musc_patch_size: 17
     musc_stride: 6
     musc_knn_k: 5
@@ -100,4 +102,9 @@ auto_masks:
     sam2_enabled: true
     sam_positive_points: 5
     sam_negative_points: 4
-    max_normals: 16
+    max_normals: 6
+    widen_on_repeated_texture: true
+  selector_training:
+    seed: 20260722
+    max_normals_per_category: 12
+    corruptions_per_image: 6
