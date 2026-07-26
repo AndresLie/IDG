@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 115
-progress: 9.58%
+runtime samples completed: 159
+progress: 13.25%
 ```
 
 ## Resume Validation
@@ -35,6 +35,14 @@ A third bounded command then:
 - preserved all run-local evaluation, training, and uncertainty-mask artifacts;
 - produced no duplicate sample identity keys.
 
+A fourth bounded command:
+
+- reused all 115 checkpoint rows under the same fingerprints and run ID;
+- incremented `resume_count` from 2 to 3;
+- added 44 capsule records;
+- stopped cleanly at 159 unique records;
+- again left the stable runtime manifest unpublished.
+
 Current checkpoint:
 
 ```text
@@ -49,15 +57,16 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `115 / 1,200` |
-| Current run artifacts | `459.9 MiB` |
+| Completed rows | `159 / 1,200` |
+| Current run artifacts | `682.8 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
-| Latest-vs-previous rate change | `-0.70%` |
-| Cumulative exact rate | `17.765 s/image` |
-| Projected remaining compute | approximately `5.35 hours` |
-| Projected total compute | approximately `5.92 hours` |
-| Linear artifact projection | approximately `4.69 GiB` |
+| Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
+| Fourth-vs-third segment rate change | `+23.24%` |
+| Cumulative exact rate | `18.886 s/image` |
+| Projected remaining compute | approximately `5.46 hours` |
+| Projected total compute | approximately `6.30 hours` |
+| Linear artifact projection | approximately `5.03 GiB` |
 | Free storage after checkpoint | approximately `16 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
@@ -65,29 +74,31 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The first checkpoint contained 60 `candle` rows. The new segment contains 40
-additional `candle` rows and the first 15 `capsules` rows:
+The checkpoint now contains all 100 `candle` rows and the first 59 `capsules`
+rows:
 
 ```text
 candle: 100
-capsules: 15
+capsules: 59
 
-needs_review: 113
-soft_mask_only: 2
+needs_review: 149
+soft_mask_only: 10
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 115 rows:
+Selected proposal modes over all 159 rows:
 
 ```text
-fused_q975: 70
-fused_q950: 24
+fused_q975: 93
+fused_q950: 25
+fused_q900: 12
+fused_q950_component_1: 9
 fused_q900_component_1: 8
-fused_q900: 5
 fused_q850_component_1: 4
-fused_q950_component_1: 2
-fused_q850: 1
+fused_q975_component_1: 4
+fused_q850: 2
 edge_fused_q900_component_1_2: 1
+edge_fused_q850_component_1_1: 1
 ```
 
 The latest segment's exact selector diagnostics are:
@@ -101,11 +112,15 @@ The latest segment's exact selector diagnostics are:
 | Qwen full-image fallback | `40/60` | `24/55` |
 
 The aggregate expected-IoU drop is mostly category-composition drift, not a
-same-category regression. The 40 new candle rows average `0.1665` expected IoU,
-while the first 15 capsule rows average only `0.1078` and source disagreement
-`0.6291`. All 115 rows are still labeled `ring_sector`, which is an additional
-structure-profile transfer warning. Structural specialists are disabled, so
-that label does not route the frozen inference path.
+same-category regression. The 40-row candle continuation averaged `0.1665`
+expected IoU. The first 15 capsule rows averaged only `0.1078`, while the next
+44 capsule rows improved modestly to `0.1289`. Capsule source disagreement
+remains high at `0.6436`.
+
+The structure profile is no longer completely collapsed: 11 of the latest 44
+capsule rows are `repeated_chain`; the other 33 remain `ring_sector`. Structural
+specialists are disabled, so these labels do not route the frozen inference
+path.
 
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
@@ -115,7 +130,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-e1e245b1565dca52ea81fbf7807e318c6dcbff071342a8f7eeb21ab5799db4f4
+441a6860895884bd1140a011ef2dc6c2b7831af6277d4700e15d4aab2dd9bace
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
