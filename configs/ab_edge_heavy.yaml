@@ -1,6 +1,6 @@
 project:
-  output_dir: outputs/ab_edge_refine/on_v2
-  report_dir: reports/ab_edge_refine/on_v2
+  output_dir: outputs/ab_edge_refine/heavy
+  report_dir: reports/ab_edge_refine/heavy
 
 dataset:
   root: data/mvtec_bottle_zipper_auto_mask
@@ -33,14 +33,14 @@ evaluation:
 
 research_governance:
   enabled: true
-  architecture_tag: v3-generic-evidence-ab-edge-on-v2
+  architecture_tag: v3-generic-evidence-ab-edge-heavy
   experiment_track: scarce-defect-pseudo-labeling
   development_categories: [bottle, zipper, wood, metal_nut, tile]
   locked_categories: [carpet, cable, capsule, grid, hazelnut, leather, pill, screw, toothbrush, transistor]
   locked_official_mask_roots: [data/locked_official_reference_masks]
   enforce_official_mask_isolation: true
   dataset_fingerprint_mode: sha256
-  generic_mask_gate_path: reports/ab_edge_refine/on_v2/development_generalization/generic_mask_gate.json
+  generic_mask_gate_path: reports/ab_edge_refine/heavy/development_generalization/generic_mask_gate.json
   release_architecture_tag: v3-generic-evidence-rc1
 
 auto_masks:
@@ -61,6 +61,7 @@ auto_masks:
   allow_localization_fallback: true
   localization_fallback_mode: full_image
   min_component_area: 12
+  max_images_per_target: 1
   ground_truth_mask_variant: eval_tight
   eval_mask_variant: eval_tight
   training_mask_variant: training_medium
@@ -78,14 +79,14 @@ auto_masks:
   generic_evidence:
     edge_refine: true
     dinov2_enabled: true
-    dinov2_scales: [448]
+    dinov2_scales: [448, 672]
     dinov2_layers: [-4, -1]
-    dinov2_memory_stride: 4
-    registered_residual_enabled: false
+    dinov2_memory_stride: 1
+    registered_residual_enabled: true
     registration_scale: 448
     registration_min_inlier_ratio: 0.25
     registration_max_reprojection_error: 8.0
-    musc_enabled: false
+    musc_enabled: true
     musc_patch_size: 17
     musc_stride: 6
     musc_knn_k: 5
@@ -94,7 +95,7 @@ auto_masks:
     sam2_enabled: true
     sam_positive_points: 5
     sam_negative_points: 4
-    max_normals: 6
+    max_normals: 16
   selector_training:
     seed: 20260722
     max_normals_per_category: 12
