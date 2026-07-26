@@ -542,8 +542,13 @@ def run_auto_masks(config: AppConfig) -> Path:
         },
     )
     _write_summary(report_dir / "summary.md", rows, metadata_path, auto)
-    _write_contact_sheet(report_dir / "contact_sheet_mask_variants_current.png", rows)
-    _write_candidate_comparison_sheet(report_dir / "contact_sheet_candidate_comparison.png", rows)
+    if bool(auto.get("write_contact_sheets", True)):
+        contact_sheet_rows = _bounded_contact_sheet_rows(
+            rows,
+            max_rows=int(auto.get("contact_sheet_max_rows", 64)),
+        )
+        _write_contact_sheet(report_dir / "contact_sheet_mask_variants_current.png", contact_sheet_rows)
+        _write_candidate_comparison_sheet(report_dir / "contact_sheet_candidate_comparison.png", contact_sheet_rows)
     write_json(
         report_dir / "summary.json",
         {
@@ -848,8 +853,13 @@ def reselect_auto_masks(config: AppConfig) -> Path:
     )
     record_rows = [_auto_mask_record_from_row(row) for row in rows]
     _write_summary(report_dir / "summary.md", record_rows, metadata_path, auto)
-    _write_contact_sheet(report_dir / "contact_sheet_mask_variants_current.png", record_rows)
-    _write_candidate_comparison_sheet(report_dir / "contact_sheet_candidate_comparison.png", record_rows)
+    if bool(auto.get("write_contact_sheets", True)):
+        contact_sheet_rows = _bounded_contact_sheet_rows(
+            record_rows,
+            max_rows=int(auto.get("contact_sheet_max_rows", 64)),
+        )
+        _write_contact_sheet(report_dir / "contact_sheet_mask_variants_current.png", contact_sheet_rows)
+        _write_candidate_comparison_sheet(report_dir / "contact_sheet_candidate_comparison.png", contact_sheet_rows)
     return metadata_path
 
 
@@ -5182,6 +5192,10 @@ def _predict_sam_mask(
     return None, {"sam_provider": provider, "sam_available": False, "sam_reason": "sam2 and segment_anything are not installed"}
 
 
+def _writable_rgb_array(image: Image.Image) -> np.ndarray:
+    return np.array(image.convert("RGB"), dtype=np.uint8, copy=True)
+
+
 def _predict_sam2_mask(
     image: Image.Image,
     region: tuple[int, int, int, int],
@@ -5204,7 +5218,7 @@ def _predict_sam2_mask(
         model = build_sam2(str(model_cfg), str(checkpoint), device=device)
         predictor = SAM2ImagePredictor(model)
         _SAM2_PREDICTOR_CACHE[key] = predictor
-    predictor.set_image(np.asarray(image.convert("RGB")))
+    predictor.set_image(_writable_rgb_array(image))
     masks, scores, _ = predictor.predict(
         point_coords=np.asarray(point_coords, dtype=np.float32),
         point_labels=np.asarray(point_labels, dtype=np.int32),
@@ -5237,7 +5251,7 @@ def _predict_sam1_mask(
         model = sam_model_registry[model_type](checkpoint=str(checkpoint)).to(device)
         predictor = SamPredictor(model)
         _SAM1_PREDICTOR_CACHE[key] = predictor
-    predictor.set_image(np.asarray(image.convert("RGB")))
+    predictor.set_image(_writable_rgb_array(image))
     masks, scores, _ = predictor.predict(
         point_coords=np.asarray(point_coords, dtype=np.float32),
         point_labels=np.asarray(point_labels, dtype=np.int32),
@@ -10403,6 +10417,7 @@ def _run_generic_mask_artifacts(
     generic = auto.get("generic_evidence", {})
     if not isinstance(generic, dict):
         raise ValueError("auto_masks.generic_evidence must be a mapping")
+    persist_target_cache = bool(generic.get("persist_target_evidence_cache", True))
     structure_attributes = _generic_structure_attributes(image, structure_region)
     providers: list[Any] = []
     if bool(generic.get("dinov2_enabled", True)):
@@ -10416,6 +10431,7 @@ def _run_generic_mask_artifacts(
                 max_normals=int(generic.get("max_normals", 16)),
                 memory_stride=int(generic.get("dinov2_memory_stride", 1)),
                 artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "dinov2_multiscale",
+                persist_target_cache=persist_target_cache,
             )
         )
     pca_enabled = bool(generic.get("pca_subspace_enabled", False))
@@ -10459,6 +10475,7 @@ def _run_generic_mask_artifacts(
                 min_inlier_ratio=float(generic.get("registration_min_inlier_ratio", 0.25)),
                 max_reprojection_error=float(generic.get("registration_max_reprojection_error", 8.0)),
                 artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "registered_normal_residual",
+                persist_target_cache=persist_target_cache,
             )
         )
     if bool(generic.get("musc_enabled", True)):
@@ -10488,6 +10505,7 @@ def _run_generic_mask_artifacts(
                         "knn_k": generic.get("musc_knn_k", 5),
                     }
                 ),
+                persist_target_cache=persist_target_cache,
             )
         )
     if bool(generic.get("texture_residual_enabled", True)):
@@ -10505,6 +10523,7 @@ def _run_generic_mask_artifacts(
                 calibration_normals=int(generic.get("normal_calibration_holdouts", 3)),
                 artifact_dir=config.output_dir / "auto_masks" / "evidence_cache" / "normal_texture_residual",
                 cache_identity=fingerprint({"max_normals": generic.get("max_normals", 16)}),
+                persist_target_cache=persist_target_cache,
             )
         )
     if not providers:
@@ -10579,10 +10598,12 @@ def _run_generic_mask_artifacts(
         min_component_area=int(auto.get("min_component_area", 12)),
         specialist_masks=specialist_masks,
         additive_providers=additive_providers,
+        artifact_retention=str(auto.get("artifact_retention", "full")),
     )
     artifacts["parameters"]["specialists"] = str(auto.get("specialists", "disabled"))
     artifacts["parameters"]["active_structural_specialists"] = sorted(specialist_masks)
     artifacts["parameters"]["pca_subspace_gate"] = pca_gate
+    artifacts["parameters"]["persist_target_evidence_cache"] = persist_target_cache
     artifacts["structure_profile"] = str(structure_attributes["structure_profile"])
     return artifacts
 
@@ -10961,6 +10982,36 @@ def _write_contact_sheet(path: Path, rows: list[AutoMaskRecord]) -> None:
             draw.text((x + 4, y + 4), text, fill="black")
     path.parent.mkdir(parents=True, exist_ok=True)
     sheet.save(path)
+
+
+def _bounded_contact_sheet_rows(
+    rows: list[AutoMaskRecord],
+    *,
+    max_rows: int,
+) -> list[AutoMaskRecord]:
+    if max_rows <= 0 or len(rows) <= max_rows:
+        return rows
+    buckets: dict[str, list[AutoMaskRecord]] = {}
+    for row in rows:
+        buckets.setdefault(row.category, []).append(row)
+    selected: list[AutoMaskRecord] = []
+    offsets = {category: 0 for category in buckets}
+    categories = sorted(buckets)
+    while len(selected) < max_rows:
+        added = False
+        for category in categories:
+            offset = offsets[category]
+            bucket = buckets[category]
+            if offset >= len(bucket):
+                continue
+            selected.append(bucket[offset])
+            offsets[category] += 1
+            added = True
+            if len(selected) >= max_rows:
+                break
+        if not added:
+            break
+    return selected
 
 
 def _write_candidate_comparison_sheet(path: Path, rows: list[AutoMaskRecord]) -> None:

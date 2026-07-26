@@ -181,6 +181,11 @@ def test_architecture_fingerprint_covers_behavior_but_not_operational_device(tmp
     original = architecture_core_fingerprint(config)
     config.data["auto_masks"]["qwen_device"] = "cuda"
     assert architecture_core_fingerprint(config) == original
+    config.data["auto_masks"]["artifact_retention"] = "locked_evaluation"
+    config.data["auto_masks"]["write_contact_sheets"] = False
+    config.data["auto_masks"]["contact_sheet_max_rows"] = 12
+    config.data["auto_masks"]["generic_evidence"]["persist_target_evidence_cache"] = False
+    assert architecture_core_fingerprint(config) == original
     config.data["auto_masks"]["max_images_per_target"] = 1
     assert architecture_core_fingerprint(config) != original
     config.data["auto_masks"].pop("max_images_per_target")

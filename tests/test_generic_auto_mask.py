@@ -5,6 +5,8 @@ import json
 import os
 import time
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pytest
@@ -18,7 +20,7 @@ from iadgen_v2.auto_mask.pipeline import run_generic_evidence_pipeline
 from iadgen_v2.auto_mask.proposals import MEASUREMENT_NAMES, generate_generic_proposals
 from iadgen_v2.auto_mask.refinement import EdgeAwareRefiner, edge_align_field, guided_filter
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector, _iou_from_precision_recall, fit_selector_bundle
-from iadgen_v2.auto_masks import reselect_auto_masks
+from iadgen_v2.auto_masks import _bounded_contact_sheet_rows, _writable_rgb_array, reselect_auto_masks
 from iadgen_v2.config import load_config
 from iadgen_v2.governance import (
     architecture_core_fingerprint,
@@ -313,7 +315,218 @@ def test_functional_provider_calibrates_from_held_out_normals(tmp_path: Path) ->
     assert evidence.calibration["median"] < 0.5
     assert cached.metadata["cache_hit"] is True
     assert np.array_equal(cached.values, evidence.values)
+    assert cached.calibration == evidence.calibration
+    assert cached.reliability == evidence.reliability
+    assert cached.augmentation_consistency == evidence.augmentation_consistency
+    assert set(cached.metadata) == set(evidence.metadata)
+    assert {
+        key: value for key, value in cached.metadata.items() if key != "cache_hit"
+    } == {
+        key: value for key, value in evidence.metadata.items() if key != "cache_hit"
+    }
     assert set(regions) == {(0, 0, 16, 16)}
+
+
+def test_dinov2_evidence_cache_preserves_cold_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import iadgen_v2.auto_mask.evidence.foundation as foundation
+
+    defect = tmp_path / "defect.png"
+    normals = tuple(tmp_path / f"normal_{index}.png" for index in range(2))
+    Image.new("RGB", (16, 16), (180, 180, 180)).save(defect)
+    Image.new("RGB", (16, 16), (80, 80, 80)).save(normals[0])
+    Image.new("RGB", (16, 16), (110, 110, 110)).save(normals[1])
+    calls = {"tokens": 0}
+
+    def fake_tokens(_processor, _model, _device, image, _scale, _layers):
+        calls["tokens"] += 1
+        level = float(np.asarray(image, dtype=np.float32).mean() / 255.0)
+        values = np.asarray(
+            [
+                [1.0, level, 0.1],
+                [0.9, level * 0.8, 0.3],
+                [0.7, level * 1.2, 0.5],
+                [0.5, level, 0.8],
+            ],
+            dtype=np.float32,
+        )
+        values /= np.linalg.norm(values, axis=1, keepdims=True)
+        return values, (2, 2)
+
+    monkeypatch.setattr(
+        foundation,
+        "_load_model",
+        lambda *_args, **_kwargs: (object(), object(), SimpleNamespace(type="cpu")),
+    )
+    monkeypatch.setattr(foundation, "_tokens", fake_tokens)
+    context = AutoMaskContext(
+        image_path=defect,
+        normal_paths=normals,
+        image_size=(16, 16),
+        semantic_regions=((0, 0, 16, 16),),
+        cache_key="metadata-stability",
+    )
+    provider = foundation.MultiScaleDinoProvider(
+        device="cpu",
+        scales=(16,),
+        layers=(-1,),
+        artifact_dir=tmp_path / "cache",
+    )
+
+    cold = provider.compute(context)
+    cold_calls = calls["tokens"]
+    warm = provider.compute(context)
+
+    assert cold_calls > 0
+    assert calls["tokens"] == cold_calls
+    assert np.array_equal(warm.values, cold.values)
+    assert warm.calibration == cold.calibration
+    assert warm.reliability == cold.reliability
+    assert warm.augmentation_consistency == cold.augmentation_consistency
+    assert set(warm.metadata) == set(cold.metadata)
+    assert warm.metadata["cache_hit"] is True
+    assert {
+        key: value for key, value in warm.metadata.items() if key != "cache_hit"
+    } == {
+        key: value for key, value in cold.metadata.items() if key != "cache_hit"
+    }
+
+
+def test_target_evidence_cache_can_be_disabled_without_disabling_normal_token_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import iadgen_v2.auto_mask.evidence.foundation as foundation
+
+    defect = tmp_path / "defect.png"
+    normal = tmp_path / "normal.png"
+    Image.new("RGB", (16, 16), (180, 180, 180)).save(defect)
+    Image.new("RGB", (16, 16), (80, 80, 80)).save(normal)
+
+    def fake_tokens(_processor, _model, _device, image, _scale, _layers):
+        level = float(np.asarray(image, dtype=np.float32).mean() / 255.0)
+        values = np.asarray(
+            [[1.0, level], [0.8, level + 0.1], [0.6, level + 0.2], [0.4, level + 0.3]],
+            dtype=np.float32,
+        )
+        values /= np.linalg.norm(values, axis=1, keepdims=True)
+        return values, (2, 2)
+
+    monkeypatch.setattr(
+        foundation,
+        "_load_model",
+        lambda *_args, **_kwargs: (object(), object(), SimpleNamespace(type="cpu")),
+    )
+    monkeypatch.setattr(foundation, "_tokens", fake_tokens)
+    context = AutoMaskContext(
+        image_path=defect,
+        normal_paths=(normal,),
+        image_size=(16, 16),
+        semantic_regions=((0, 0, 16, 16),),
+        cache_key="one-shot",
+    )
+    provider = foundation.MultiScaleDinoProvider(
+        device="cpu",
+        scales=(16,),
+        layers=(-1,),
+        artifact_dir=tmp_path / "cache",
+        persist_target_cache=False,
+    )
+
+    result = provider.compute(context)
+
+    assert result.artifact_path is None
+    assert list((tmp_path / "cache" / "dino_normal_tokens").glob("*.npy"))
+    assert not list((tmp_path / "cache").glob("*.npz"))
+
+
+def test_dino_token_boundary_passes_writable_rgb_array_to_processor() -> None:
+    import torch
+    import iadgen_v2.auto_mask.evidence.foundation as foundation
+
+    class Processor:
+        def __call__(self, *, images, **_kwargs):
+            assert isinstance(images, np.ndarray)
+            assert images.flags.writeable
+            return {"pixel_values": torch.zeros((1, 3, 8, 8), dtype=torch.float32)}
+
+    class Model:
+        def __call__(self, **_kwargs):
+            tokens = torch.arange(15, dtype=torch.float32).reshape(1, 5, 3)
+            return SimpleNamespace(hidden_states=(tokens,))
+
+    values, grid = foundation._tokens(
+        Processor(),
+        Model(),
+        torch.device("cpu"),
+        Image.new("RGB", (8, 8), (120, 120, 120)),
+        8,
+        (-1,),
+    )
+
+    assert values.shape == (4, 3)
+    assert grid == (2, 2)
+
+
+def test_sam_boundary_materializes_writable_rgb_array() -> None:
+    values = _writable_rgb_array(Image.new("RGB", (8, 8), (120, 120, 120)))
+    assert values.dtype == np.uint8
+    assert values.flags.writeable
+
+
+def test_registered_residual_cache_preserves_reference_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import iadgen_v2.auto_mask.evidence.foundation as foundation
+
+    defect = tmp_path / "defect.png"
+    normals = tuple(tmp_path / f"normal_{index}.png" for index in range(2))
+    Image.new("RGB", (24, 24), (180, 180, 180)).save(defect)
+    Image.new("RGB", (24, 24), (80, 80, 80)).save(normals[0])
+    Image.new("RGB", (24, 24), (100, 100, 100)).save(normals[1])
+    calls = {"tokens": 0}
+
+    def fake_tokens(_processor, _model, _device, _image, _scale, _layers):
+        calls["tokens"] += 1
+        return np.eye(9, dtype=np.float32), (3, 3)
+
+    monkeypatch.setattr(
+        foundation,
+        "_load_model",
+        lambda *_args, **_kwargs: (object(), object(), SimpleNamespace(type="cpu")),
+    )
+    monkeypatch.setattr(foundation, "_tokens", fake_tokens)
+    context = AutoMaskContext(
+        image_path=defect,
+        normal_paths=normals,
+        image_size=(24, 24),
+        semantic_regions=((0, 0, 24, 24),),
+        cache_key="registered-metadata-stability",
+    )
+    provider = foundation.RegisteredDinoResidualProvider(
+        device="cpu",
+        scale=24,
+        artifact_dir=tmp_path / "cache",
+    )
+
+    cold = provider.compute(context)
+    cold_calls = calls["tokens"]
+    warm = provider.compute(context)
+
+    assert calls["tokens"] == cold_calls
+    assert np.array_equal(warm.values, cold.values)
+    assert warm.calibration == cold.calibration
+    assert warm.reliability == cold.reliability
+    assert set(warm.metadata) == set(cold.metadata)
+    assert warm.metadata["registration_reference_path"] in {str(path) for path in normals}
+    assert {
+        key: value for key, value in warm.metadata.items() if key != "cache_hit"
+    } == {
+        key: value for key, value in cold.metadata.items() if key != "cache_hit"
+    }
 
 
 def test_generic_proposals_selector_and_pipeline_write_contract_outputs(tmp_path: Path) -> None:
@@ -348,6 +561,76 @@ def test_generic_proposals_selector_and_pipeline_write_contract_outputs(tmp_path
     assert artifacts["candidate_predictions"]
     for name in ("eval_tight", "training_soft", "positive_core", "possible_region", "uncertainty_map", "inpaint_soft"):
         assert Path(artifacts["mask_variant_paths"][name]).exists()
+
+
+def test_locked_evaluation_retention_preserves_masks_and_decision(tmp_path: Path) -> None:
+    image_path = tmp_path / "defect.png"
+    normal_path = tmp_path / "normal.png"
+    Image.new("RGB", (64, 64), (120, 120, 120)).save(image_path)
+    Image.new("RGB", (64, 64), (120, 120, 120)).save(normal_path)
+    first = np.full((64, 64), 0.08, dtype=np.float32)
+    second = np.full((64, 64), 0.12, dtype=np.float32)
+    first[20:40, 22:42] = 0.95
+    second[21:41, 21:41] = 0.90
+
+    def run(name: str, retention: str) -> dict[str, Any]:
+        context = AutoMaskContext(
+            image_path=image_path,
+            normal_paths=(normal_path,),
+            image_size=(64, 64),
+            semantic_regions=((12, 12, 52, 52),),
+            foreground=np.ones((64, 64), dtype=bool),
+            cache_key=name,
+        )
+        return run_generic_evidence_pipeline(
+            context,
+            [_FixedProvider("first", first), _FixedProvider("second", second)],
+            output_dir=tmp_path / name / "masks",
+            variant_dir=tmp_path / name / "variants",
+            artifact_stem="sample",
+            selector=GenericCandidateSelector(),
+            min_component_area=4,
+            artifact_retention=retention,
+        )
+
+    full = run("full", "full")
+    lean = run("lean", "locked_evaluation")
+
+    assert lean["selection_decision"] == full["selection_decision"]
+    assert lean["selected_refinement"] == full["selected_refinement"]
+    assert lean["candidate_scores"] == full["candidate_scores"]
+    assert lean["candidate_measurements"] == full["candidate_measurements"]
+    for key in ("refined_mask_path", "eval_mask_path", "training_mask_path", "uncertainty_mask_path"):
+        assert np.array_equal(np.asarray(Image.open(lean[key])), np.asarray(Image.open(full[key])))
+    for name, full_path in full["mask_variant_paths"].items():
+        assert np.array_equal(
+            np.asarray(Image.open(lean["mask_variant_paths"][name])),
+            np.asarray(Image.open(full_path)),
+        )
+    assert full["candidate_refined_paths"]
+    assert full["candidate_heatmap_paths"]
+    assert lean["candidate_refined_paths"] == {}
+    assert lean["candidate_heatmap_paths"] == {}
+    assert lean["parameters"]["artifact_retention"] == "locked_evaluation"
+    assert Path(lean["parameters"]["fused_evidence_path"]).exists()
+    assert lean["parameters"]["source_disagreement_path"] is None
+    assert lean["parameters"]["edge_refinement"]["edge_aligned_evidence_path"] is None
+    assert not list((tmp_path / "lean").rglob("*_first_evidence.png"))
+    assert not list((tmp_path / "lean").rglob("*_source_disagreement.png"))
+    with pytest.raises(ValueError, match="artifact_retention"):
+        run("invalid", "selected_only")
+
+
+def test_contact_sheet_rows_are_bounded_and_category_balanced() -> None:
+    rows = [
+        SimpleNamespace(category=category, image_path=f"{category}_{index}.png")
+        for category in ("a", "b", "c")
+        for index in range(5)
+    ]
+    selected = _bounded_contact_sheet_rows(rows, max_rows=6)
+    assert len(selected) == 6
+    assert [row.category for row in selected] == ["a", "b", "c", "a", "b", "c"]
+    assert _bounded_contact_sheet_rows(rows, max_rows=0) is rows
 
 
 def test_additive_provider_preserves_baseline_candidates(tmp_path: Path) -> None:

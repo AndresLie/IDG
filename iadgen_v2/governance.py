@@ -181,7 +181,10 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
     selector_path = config.resolve_path(str(selector_value)) if selector_value else None
     selector_hash = _sha256_file(selector_path) if selector_path is not None and selector_path.is_file() else None
     excluded_operational_keys = {
+        "artifact_retention",
+        "contact_sheet_max_rows",
         "write_overlays",
+        "write_contact_sheets",
         "write_variant_overlays",
         "qwen_min_free_gib",
         "qwen_device",
@@ -189,11 +192,17 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
         "sam_device",
         "selector_training",
     }
-    behavioral_auto = {
-        key: value
-        for key, value in auto.items()
-        if key not in excluded_operational_keys and not key.endswith("_cache_dir") and key != "selector_model_path"
-    }
+    behavioral_auto = {}
+    for key, value in auto.items():
+        if key in excluded_operational_keys or key.endswith("_cache_dir") or key == "selector_model_path":
+            continue
+        if key == "generic_evidence" and isinstance(value, dict):
+            value = {
+                nested_key: nested_value
+                for nested_key, nested_value in value.items()
+                if nested_key != "persist_target_evidence_cache"
+            }
+        behavioral_auto[key] = value
     checkpoint_hashes: dict[str, str | None] = {}
     for key in ("sam2_checkpoint", "sam_checkpoint"):
         value = auto.get(key)

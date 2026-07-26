@@ -13,13 +13,18 @@ from iadgen_v2.auto_mask.contracts import AutoMaskContext, EvidenceMap
 
 
 HeatmapBuilder = Callable[[Image.Image, list, tuple[int, int, int, int]], tuple[np.ndarray, dict[str, Any]]]
+EVIDENCE_CACHE_SCHEMA_VERSION = 2
 
 
 def robust_probability(values: np.ndarray, calibration: dict[str, float] | None = None) -> tuple[np.ndarray, dict[str, float]]:
     array = np.asarray(values, dtype=np.float32)
     finite = array[np.isfinite(array)]
     if finite.size == 0:
-        return np.zeros_like(array, dtype=np.float32), {"median": 0.0, "mad": 1.0}
+        return np.zeros_like(array, dtype=np.float32), {
+            "median": 0.0,
+            "mad": 1.0,
+            "robust_scale": 1.4826,
+        }
     supplied = calibration or {}
     median = float(supplied.get("median", np.median(finite)))
     mad = float(supplied.get("mad", np.median(np.abs(finite - median))))
@@ -28,6 +33,37 @@ def robust_probability(values: np.ndarray, calibration: dict[str, float] | None 
     probability = 1.0 / (1.0 + np.exp(-(z - 1.5)))
     probability[~np.isfinite(probability)] = 0.0
     return probability.astype(np.float32), {"median": median, "mad": mad, "robust_scale": scale}
+
+
+def serialize_cache_metadata(metadata: dict[str, Any]) -> str:
+    return json.dumps(
+        _json_safe({key: value for key, value in metadata.items() if key != "cache_hit"}),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def deserialize_cache_metadata(cache: Any) -> dict[str, Any]:
+    if "metadata_json" not in cache.files:
+        raise ValueError("Evidence cache is missing schema-stable metadata")
+    value = cache["metadata_json"]
+    text = str(value.item() if np.asarray(value).shape == () else value.tolist())
+    metadata = json.loads(text)
+    if not isinstance(metadata, dict):
+        raise ValueError("Evidence cache metadata must decode to an object")
+    return metadata
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def apply_soft_spatial_prior(
@@ -79,20 +115,27 @@ class FunctionalEvidenceProvider:
     calibration_stride: int = 8
     artifact_dir: Path | None = None
     cache_identity: str = "v1"
+    persist_target_cache: bool = True
 
     def compute(self, context: AutoMaskContext) -> EvidenceMap:
         cache_path = self._evidence_cache_path(context)
         if cache_path is not None and cache_path.exists():
-            cached = np.load(cache_path)
-            return EvidenceMap(
-                source=self.name,
-                values=cached["values"].astype(np.float32),
-                reliability=float(cached["reliability"]),
-                calibration={"median": float(cached["median"]), "mad": float(cached["mad"])},
-                augmentation_consistency=float(cached["consistency"]),
-                artifact_path=cache_path,
-                metadata={"cache_hit": True, "calibration_source": str(cached["calibration_source"])},
-            )
+            with np.load(cache_path) as cached:
+                metadata = deserialize_cache_metadata(cached)
+                calibration = {
+                    "median": float(cached["median"]),
+                    "mad": float(cached["mad"]),
+                    "robust_scale": float(cached["robust_scale"]),
+                }
+                return EvidenceMap(
+                    source=self.name,
+                    values=cached["values"].astype(np.float32),
+                    reliability=float(cached["reliability"]),
+                    calibration=calibration,
+                    augmentation_consistency=float(cached["consistency"]),
+                    artifact_path=cache_path,
+                    metadata={**metadata, "cache_hit": True},
+                )
         image = Image.open(context.image_path).convert("RGB")
         # Providers produce an unfenced anomaly field. Qwen is applied only
         # afterward as a soft prior, so evidence outside its region survives.
@@ -126,8 +169,11 @@ class FunctionalEvidenceProvider:
                 reliability=result.reliability,
                 median=result.calibration["median"],
                 mad=result.calibration["mad"],
+                robust_scale=result.calibration["robust_scale"],
                 consistency=result.augmentation_consistency,
                 calibration_source=calibration_source,
+                cache_schema_version=EVIDENCE_CACHE_SCHEMA_VERSION,
+                metadata_json=serialize_cache_metadata(result.metadata),
             )
         return result
 
@@ -165,9 +211,12 @@ class FunctionalEvidenceProvider:
         return calibration
 
     def _evidence_cache_path(self, context: AutoMaskContext) -> Path | None:
-        if self.artifact_dir is None:
+        if self.artifact_dir is None or not self.persist_target_cache:
             return None
-        identity = f"{self.cache_identity}|{self.name}|{context.cache_key}"
+        identity = (
+            f"metadata-v{EVIDENCE_CACHE_SCHEMA_VERSION}|"
+            f"{self.cache_identity}|{self.name}|{context.cache_key}"
+        )
         return self.artifact_dir / "evidence" / f"{hashlib.sha256(identity.encode()).hexdigest()}.npz"
 
     def _calibration_cache_path(self, context: AutoMaskContext) -> Path | None:

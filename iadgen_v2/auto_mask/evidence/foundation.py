@@ -11,7 +11,13 @@ import numpy as np
 from PIL import Image
 
 from iadgen_v2.auto_mask.contracts import AutoMaskContext, EvidenceMap, RegistrationResult
-from iadgen_v2.auto_mask.evidence.base import apply_soft_spatial_prior, robust_probability
+from iadgen_v2.auto_mask.evidence.base import (
+    EVIDENCE_CACHE_SCHEMA_VERSION,
+    apply_soft_spatial_prior,
+    deserialize_cache_metadata,
+    robust_probability,
+    serialize_cache_metadata,
+)
 
 
 _MODEL_CACHE: dict[tuple[str, str | None, str], tuple[Any, Any, Any]] = {}
@@ -41,8 +47,11 @@ def _load_model(model_id: str, cache_dir: str | None, device: str) -> tuple[Any,
 def _tokens(processor: Any, model: Any, device: Any, image: Image.Image, scale: int, layers: tuple[int, ...]) -> tuple[np.ndarray, tuple[int, int]]:
     import torch
 
+    # PIL-backed arrays may be read-only. Materialize a writable boundary so
+    # torchvision never wraps immutable storage in a Torch tensor.
+    writable_rgb = np.array(image.convert("RGB"), dtype=np.uint8, copy=True)
     inputs = processor(
-        images=image.convert("RGB"),
+        images=writable_rgb,
         return_tensors="pt",
         do_resize=True,
         size={"height": int(scale), "width": int(scale)},
@@ -127,25 +136,22 @@ class MultiScaleDinoProvider:
     max_normals: int = 16
     memory_stride: int = 1
     artifact_dir: Path | None = None
+    persist_target_cache: bool = True
 
     def compute(self, context: AutoMaskContext) -> EvidenceMap:
         cache_path = self._cache_path(context)
         if cache_path is not None and cache_path.exists():
-            cached = np.load(cache_path)
-            return EvidenceMap(
-                source=self.name,
-                values=cached["values"].astype(np.float32),
-                reliability=float(cached["reliability"]),
-                calibration={"median": float(cached["median"]), "mad": float(cached["mad"])},
-                augmentation_consistency=float(cached["consistency"]),
-                artifact_path=cache_path,
-                metadata={
-                    "cache_hit": True,
-                    "scales": list(self.scales),
-                    "layers": list(self.layers),
-                    "calibration_source": "leave_one_normal_out",
-                },
-            )
+            with np.load(cache_path) as cached:
+                metadata = deserialize_cache_metadata(cached)
+                return EvidenceMap(
+                    source=self.name,
+                    values=cached["values"].astype(np.float32),
+                    reliability=float(cached["reliability"]),
+                    calibration={"median": float(cached["median"]), "mad": float(cached["mad"])},
+                    augmentation_consistency=float(cached["consistency"]),
+                    artifact_path=cache_path,
+                    metadata={**metadata, "cache_hit": True},
+                )
         processor, model, device = _load_model(self.model_id, self.cache_dir, self.device)
         use_gpu = getattr(device, "type", str(device)) == "cuda"
         image = Image.open(context.image_path).convert("RGB")
@@ -185,10 +191,14 @@ class MultiScaleDinoProvider:
         probability = np.mean(np.stack(scale_maps), axis=0)
         probability = apply_soft_spatial_prior(probability, context.semantic_regions)
         normalized = [(item - item.mean()) / max(1e-6, item.std()) for item in scale_maps]
-        correlations = [
-            float(np.nan_to_num(np.corrcoef(item.reshape(-1), normalized[0].reshape(-1))[0, 1], nan=0.0))
-            for item in normalized
-        ]
+        reference = normalized[0].reshape(-1)
+        correlations = []
+        for item in normalized:
+            values = item.reshape(-1)
+            if float(np.std(reference)) <= 1e-6 or float(np.std(values)) <= 1e-6:
+                correlations.append(0.0)
+            else:
+                correlations.append(float(np.corrcoef(values, reference)[0, 1]))
         consistency = float(np.clip(np.mean(correlations), 0.0, 1.0))
         normal_stability = float(1.0 / (1.0 + 10.0 * np.std(normal_medians))) if normal_medians else 0.5
         reliability = float(
@@ -202,10 +212,7 @@ class MultiScaleDinoProvider:
             "median": float(np.mean([item["median"] for item in scale_calibrations])),
             "mad": float(np.mean([item["mad"] for item in scale_calibrations])),
         }
-        if cache_path is not None:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
-            np.savez_compressed(cache_path, values=probability, reliability=reliability, median=calibration["median"], mad=calibration["mad"], consistency=consistency)
-        return EvidenceMap(
+        result = EvidenceMap(
             source=self.name,
             values=probability,
             reliability=reliability,
@@ -224,6 +231,19 @@ class MultiScaleDinoProvider:
                 "knn_backend": "gpu" if use_gpu else "numpy",
             },
         )
+        if cache_path is not None:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            np.savez_compressed(
+                cache_path,
+                values=result.values,
+                reliability=result.reliability,
+                median=result.calibration["median"],
+                mad=result.calibration["mad"],
+                consistency=result.augmentation_consistency,
+                cache_schema_version=EVIDENCE_CACHE_SCHEMA_VERSION,
+                metadata_json=serialize_cache_metadata(result.metadata),
+            )
+        return result
 
     def _normal_tokens(self, processor: Any, model: Any, device: Any, path: Path, scale: int) -> np.ndarray:
         # Content signature (size + mtime) so a same-path content change is not
@@ -299,9 +319,12 @@ class MultiScaleDinoProvider:
         return self.artifact_dir / "dino_normal_tokens" / f"{hashlib.sha256(identity.encode()).hexdigest()}.npy"
 
     def _cache_path(self, context: AutoMaskContext) -> Path | None:
-        if self.artifact_dir is None:
+        if self.artifact_dir is None or not self.persist_target_cache:
             return None
-        identity = f"v2-loo|{context.cache_key}|{self.model_id}|{self.scales}|{self.layers}|{self.max_normals}|{self.memory_stride}"
+        identity = (
+            f"v3-loo-metadata|{context.cache_key}|{self.model_id}|{self.scales}|"
+            f"{self.layers}|{self.max_normals}|{self.memory_stride}"
+        )
         return self.artifact_dir / f"{hashlib.sha256(identity.encode()).hexdigest()}.npz"
 
 
@@ -317,26 +340,26 @@ class RegisteredDinoResidualProvider:
     min_inlier_ratio: float = 0.25
     max_reprojection_error: float = 8.0
     artifact_dir: Path | None = None
+    persist_target_cache: bool = True
     last_registration: RegistrationResult | None = field(default=None, init=False)
 
     def compute(self, context: AutoMaskContext) -> EvidenceMap:
         cache_path = self._cache_path(context)
         if cache_path is not None and cache_path.exists():
-            cached = np.load(cache_path)
-            return EvidenceMap(
-                source=self.name,
-                values=cached["values"].astype(np.float32),
-                reliability=float(cached["reliability"]),
-                calibration={"median": float(cached["median"]), "mad": float(cached["mad"])},
-                artifact_path=cache_path,
-                metadata={
-                    "cache_hit": True,
-                    "registration_applied": bool(cached["registration_applied"]),
-                    "registration_inlier_ratio": float(cached["registration_inlier_ratio"]),
-                    "registration_reprojection_error": float(cached["registration_reprojection_error"]),
-                    "calibration_source": str(cached["calibration_source"]),
-                },
-            )
+            with np.load(cache_path) as cached:
+                metadata = deserialize_cache_metadata(cached)
+                return EvidenceMap(
+                    source=self.name,
+                    values=cached["values"].astype(np.float32),
+                    reliability=float(cached["reliability"]),
+                    calibration={
+                        "median": float(cached["median"]),
+                        "mad": float(cached["mad"]),
+                        "robust_scale": float(cached["robust_scale"]),
+                    },
+                    artifact_path=cache_path,
+                    metadata={**metadata, "cache_hit": True},
+                )
         processor, model, device = _load_model(self.model_id, self.cache_dir, self.device)
         image = Image.open(context.image_path).convert("RGB")
         target_tokens, grid = _tokens(processor, model, device, image, self.scale, (self.layer,))
@@ -424,18 +447,22 @@ class RegisteredDinoResidualProvider:
                 reliability=result.reliability,
                 median=result.calibration["median"],
                 mad=result.calibration["mad"],
+                robust_scale=result.calibration["robust_scale"],
                 registration_applied=registration.applied,
                 registration_inlier_ratio=registration.inlier_ratio,
                 registration_reprojection_error=registration.reprojection_error,
                 calibration_source=result.metadata["calibration_source"],
+                cache_schema_version=EVIDENCE_CACHE_SCHEMA_VERSION,
+                metadata_json=serialize_cache_metadata(result.metadata),
             )
         return result
 
     def _cache_path(self, context: AutoMaskContext) -> Path | None:
-        if self.artifact_dir is None:
+        if self.artifact_dir is None or not self.persist_target_cache:
             return None
         identity = (
-            f"v1-loo|{context.cache_key}|{self.model_id}|{self.scale}|{self.layer}|{self.max_normals}|"
+            f"v2-loo-metadata|{context.cache_key}|{self.model_id}|{self.scale}|"
+            f"{self.layer}|{self.max_normals}|"
             f"{self.min_inlier_ratio}|{self.max_reprojection_error}"
         )
         return self.artifact_dir / f"{hashlib.sha256(identity.encode()).hexdigest()}.npz"

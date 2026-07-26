@@ -177,6 +177,16 @@ def test_qwen_localization_cache_replays_and_invalidates_inputs(tmp_path: Path) 
     assert first["localization_cache"]["cache_hit"] is False
     assert replay["localization_cache"]["cache_hit"] is True
     assert replay["localization_cache"]["response_sha256"] == first["localization_cache"]["response_sha256"]
+    assert set(replay["localization_cache"]) == set(first["localization_cache"])
+    assert {
+        key: value
+        for key, value in replay["localization_cache"].items()
+        if key != "cache_hit"
+    } == {
+        key: value
+        for key, value in first["localization_cache"].items()
+        if key != "cache_hit"
+    }
     assert changed_prompt["localization_cache"]["cache_key"] != first["localization_cache"]["cache_key"]
 
     changed_revision = CachedQwenLocalizationExtractor(

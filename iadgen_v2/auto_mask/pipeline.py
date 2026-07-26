@@ -35,7 +35,10 @@ def run_generic_evidence_pipeline(
     min_component_area: int = 8,
     specialist_masks: dict[str, np.ndarray] | None = None,
     additive_providers: Iterable[EvidenceProvider] | None = None,
+    artifact_retention: str = "full",
 ) -> dict[str, Any]:
+    retention = _artifact_retention_policy(artifact_retention)
+    retain_diagnostics = retention == "full"
     output_dir.mkdir(parents=True, exist_ok=True)
     variant_dir.mkdir(parents=True, exist_ok=True)
     evidence = []
@@ -47,7 +50,8 @@ def run_generic_evidence_pipeline(
         try:
             item = provider.compute(context)
             evidence.append(item)
-            _save_float_mask(item.values, output_dir / f"{artifact_stem}_{item.source}_evidence.png")
+            if retain_diagnostics:
+                _save_float_mask(item.values, output_dir / f"{artifact_stem}_{item.source}_evidence.png")
         except Exception as exc:
             failures[name] = str(exc)
         finally:
@@ -69,17 +73,20 @@ def run_generic_evidence_pipeline(
             provider_seconds[name] = round(time.monotonic() - start, 3)
     fused, disagreement, fusion_metadata = fuse_evidence_maps(evidence)
     fused_path = output_dir / f"{artifact_stem}_fused_evidence.png"
-    disagreement_path = output_dir / f"{artifact_stem}_source_disagreement.png"
     _save_float_mask(fused, fused_path)
-    _save_float_mask(disagreement, disagreement_path)
+    disagreement_path: Path | None = None
+    if retain_diagnostics:
+        disagreement_path = output_dir / f"{artifact_stem}_source_disagreement.png"
+        _save_float_mask(disagreement, disagreement_path)
     edge_refiner = None
     edge_aligned_path: Path | None = None
     if edge_refine:
         try:
             aligned = edge_align_field(Image.open(context.image_path).convert("RGB"), fused)
             edge_refiner = EdgeAwareRefiner(aligned)
-            edge_aligned_path = output_dir / f"{artifact_stem}_edge_aligned_evidence.png"
-            _save_float_mask(aligned, edge_aligned_path)
+            if retain_diagnostics:
+                edge_aligned_path = output_dir / f"{artifact_stem}_edge_aligned_evidence.png"
+                _save_float_mask(aligned, edge_aligned_path)
         except Exception as exc:  # refinement is additive; never block the pipeline
             failures["edge_refiner"] = str(exc)
             edge_refiner = None
@@ -152,9 +159,10 @@ def run_generic_evidence_pipeline(
     candidate_scores: dict[str, float] = {}
     candidate_measurements: dict[str, dict[str, float]] = {}
     for proposal in proposals:
-        path = output_dir / f"{artifact_stem}_{proposal.mode}_refined.png"
-        _save_binary_mask(proposal.mask, path)
-        candidate_paths[proposal.mode] = str(path)
+        if retain_diagnostics:
+            path = output_dir / f"{artifact_stem}_{proposal.mode}_refined.png"
+            _save_binary_mask(proposal.mask, path)
+            candidate_paths[proposal.mode] = str(path)
         candidate_scores[proposal.mode] = float(proposal.score)
         candidate_measurements[proposal.mode] = dict(proposal.measurements)
 
@@ -203,7 +211,11 @@ def run_generic_evidence_pipeline(
         "candidate_failures": failures,
         "candidate_modes": [proposal.mode for proposal in proposals],
         "candidate_refined_paths": candidate_paths,
-        "candidate_heatmap_paths": {item.source: str(output_dir / f"{artifact_stem}_{item.source}_evidence.png") for item in evidence},
+        "candidate_heatmap_paths": (
+            {item.source: str(output_dir / f"{artifact_stem}_{item.source}_evidence.png") for item in evidence}
+            if retain_diagnostics
+            else {}
+        ),
         "policy_scores": {row["mode"]: row["conformal_iou_lower_bound"] for row in prediction_rows},
         "selection_policy": "generic_calibrated_reliability",
         "selection_arbitration": {
@@ -220,8 +232,9 @@ def run_generic_evidence_pipeline(
         "parameters": {
             "kind": "generic_evidence",
             "architecture": "v3-generic-evidence",
+            "artifact_retention": retention,
             "fused_evidence_path": str(fused_path),
-            "source_disagreement_path": str(disagreement_path),
+            "source_disagreement_path": str(disagreement_path) if disagreement_path is not None else None,
             "provider_seconds": provider_seconds,
             "edge_refinement": {
                 "enabled": bool(edge_refiner is not None),
@@ -250,6 +263,13 @@ def run_generic_evidence_pipeline(
             "component_count": int(selected.measurements.get("component_count", 0.0)),
         },
     }
+
+
+def _artifact_retention_policy(value: str) -> str:
+    retention = str(value).strip().lower()
+    if retention not in {"full", "locked_evaluation"}:
+        raise ValueError("artifact_retention must be full or locked_evaluation")
+    return retention
 
 
 def _save_binary_mask(values: np.ndarray, path: Path) -> None:
