@@ -372,19 +372,28 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Four bounded executions have completed
-`159/1,200` runtime images under the same run ID. The three resume operations
-reused `55`, `60`, and then `115` checkpoint rows without duplication. Exact
-cumulative throughput is `18.886 s/image`, projecting about `5.46` additional
-hours and a `5.03 GiB` final run footprint. The checkpoint contains 100 candle
-and 59 capsule rows, with 149 `needs_review` and ten `soft_mask_only`
-decisions. The latest 44-row capsule slice improves mean expected IoU from
-`0.1078` to `0.1289` versus the first capsule slice, but source disagreement
-remains high at `0.6436`. This is an unscored confidence-transfer warning, not
-a quality result, and no official masks have been opened.
+The full frozen run has now begun. Five bounded executions have completed
+`201/1,200` runtime images under the same run ID. The four resume operations
+reused `55`, `60`, `115`, and then `159` checkpoint rows without duplication.
+Exact cumulative throughput is `19.748 s/image`, projecting about `5.48`
+additional hours and a `5.28 GiB` final run footprint. The checkpoint contains
+all 100 candle and capsule anomalies plus the first cashew row, with 186
+`needs_review` and 15 `soft_mask_only` decisions. Relative to the preceding 44
+capsule rows, the final 41 capsule rows improve mean expected IoU from `0.1289`
+to `0.1432`, reduce source disagreement from `0.6436` to `0.6183`, and reduce
+Qwen full-image fallback from `27.3%` to `17.1%`. This remains an unscored
+confidence-transfer warning, not a quality result, and no official masks have
+been opened.
+
+The fifth interruption also exposed a bounded production weakness: PNG role
+artifacts are written directly rather than atomically. One corrupt file was
+left for the next uncheckpointed cashew sample. Because the JSONL row had not
+been committed, all six partial artifacts for that sample were safely removed
+and no checkpoint row was affected. Do not change this during the frozen run;
+add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 5.46-hour remaining VisA inference, run the
+and complete the approximately 5.48-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 
