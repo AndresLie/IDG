@@ -41,7 +41,9 @@ COMMAND_POLICIES = {
     "manual-review": "runtime",
     "locked-evaluate": "official-evaluation",
     "prepare-locked-benchmark": "official-preparation",
+    "prepare-visa-benchmark": "official-preparation",
     "freeze-architecture": "runtime",
+    "r6-evidence-package": "runtime",
 }
 
 
@@ -221,7 +223,12 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
     return fingerprint(core)
 
 
-def _huggingface_model_identity(config: AppConfig, model_id: object, cache_dir: object) -> dict[str, Any] | None:
+def _huggingface_model_identity(
+    config: AppConfig,
+    model_id: object,
+    cache_dir: object,
+    configured_revision: object = None,
+) -> dict[str, Any] | None:
     if not model_id:
         return None
     model_name = str(model_id)
@@ -230,7 +237,9 @@ def _huggingface_model_identity(config: AppConfig, model_id: object, cache_dir: 
     cache_root = config.resolve_path(str(cache_dir))
     model_root = cache_root / f"models--{model_name.replace('/', '--')}"
     refs_main = model_root / "refs" / "main"
-    revision = refs_main.read_text(encoding="utf-8").strip() if refs_main.exists() else None
+    revision = str(configured_revision) if configured_revision else (
+        refs_main.read_text(encoding="utf-8").strip() if refs_main.exists() else None
+    )
     snapshots_root = model_root / "snapshots"
     if revision:
         snapshot = snapshots_root / revision
@@ -465,7 +474,12 @@ def input_artifact_inventory(config: AppConfig, command: str) -> list[dict[str, 
         "phase3-cache": ("prepared/split_manifest.json", "phase2/*/metadata.jsonl"),
         "phase3-train": ("prepared/split_manifest.json", "phase3/*/cache_metadata.jsonl"),
         "phase3-validate": ("phase3/*/adapter.pt",),
-        "phase4-generate": ("prepared/split_manifest.json", "phase3/*/adapter.pt"),
+        "phase4-generate": (
+            "prepared/split_manifest.json",
+            "phase2/*/metadata.jsonl",
+            "phase3/*/adapter.pt",
+            "phase3/*/**/*.pt",
+        ),
         "phase5-evaluate": ("prepared/split_manifest.json", "phase4/*/*/metadata.jsonl"),
         "phase9-visual-report": ("phase5/*/segmentation_results.csv",),
         "phase11-tfidg-critic": ("phase4/*/*/metadata.jsonl",),
@@ -484,6 +498,80 @@ def input_artifact_inventory(config: AppConfig, command: str) -> list[dict[str, 
 def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[str, Any]]:
     """Hash file-backed model inputs referenced directly by the active config."""
 
+    if command == "r6-evidence-package":
+        settings = config.data.get("r6_evidence", {})
+        inputs = settings.get("inputs", {}) if isinstance(settings, dict) else {}
+        if not isinstance(inputs, dict):
+            return []
+        records = []
+        for label, item in sorted(inputs.items()):
+            if not isinstance(item, dict) or not item.get("path"):
+                continue
+            path = config.resolve_path(str(item["path"]))
+            record = {
+                "config_key": f"r6_evidence.inputs.{label}.path",
+                "configured_sha256": str(item.get("sha256", "")) or None,
+                "path": str(path),
+            }
+            if path.is_file():
+                record.update(_artifact_record(path))
+            else:
+                record.update({"kind": "missing", "size": None, "sha256": None})
+            records.append(record)
+        return records
+    if command == "prepare-visa-benchmark":
+        external = config.data.get("external_benchmarks", {})
+        visa = external.get("visa", {}) if isinstance(external, dict) else {}
+        if not isinstance(visa, dict):
+            return []
+        records = []
+        for key, hash_key in (("archive_path", "archive_sha256"), ("split_path", "split_sha256")):
+            if not visa.get(key):
+                continue
+            path = config.resolve_path(str(visa[key]))
+            record = {
+                "config_key": f"external_benchmarks.visa.{key}",
+                "configured_sha256": str(visa.get(hash_key, "")) or None,
+                "path": str(path),
+            }
+            if path.is_file():
+                record.update(_artifact_record(path))
+            else:
+                record.update({"kind": "missing", "size": None, "sha256": None})
+            records.append(record)
+        return records
+    if command == "phase5-evaluate":
+        phase5 = config.data.get("phase5", {})
+        if not isinstance(phase5, dict) or not phase5.get("synthetic_metadata_path"):
+            return []
+        path = config.resolve_path(str(phase5["synthetic_metadata_path"]))
+        record = {
+            "config_key": "phase5.synthetic_metadata_path",
+            "configured_sha256": str(phase5.get("synthetic_metadata_sha256", "")) or None,
+            "path": str(path),
+        }
+        if path.is_file():
+            record.update(_artifact_record(path))
+        else:
+            record.update({"kind": "missing", "size": None, "sha256": None})
+        return [record]
+    if command == "phase4-generate":
+        sd15 = config.data.get("models", {}).get("sd15", {})
+        if not isinstance(sd15, dict) or not sd15.get("base_model"):
+            return []
+        identity = _huggingface_model_identity(
+            config,
+            sd15.get("base_model"),
+            sd15.get("cache_dir"),
+            sd15.get("revision"),
+        )
+        return [
+            {
+                "config_key": "models.sd15.base_model",
+                "kind": "huggingface_snapshot",
+                **(identity or {}),
+            }
+        ]
     if command not in {"auto-masks", "auto-masks-reselect"}:
         return []
     auto = config.data.get("auto_masks", {})

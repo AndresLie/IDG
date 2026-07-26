@@ -13,6 +13,7 @@ from iadgen_v2.config import load_config
 from iadgen_v2.governance import (
     architecture_core_fingerprint,
     build_experiment_manifest,
+    configured_artifact_inventory,
     validate_governance_for_command,
     write_experiment_manifest,
 )
@@ -123,6 +124,136 @@ def test_experiment_manifest_hashes_mutable_selector_artifact(tmp_path: Path) ->
     ]
     assert second["configured_artifacts"][0]["sha256"] == hashlib.sha256(b"selector-v2").hexdigest()
     assert first["architecture_core_fingerprint"] != second["architecture_core_fingerprint"]
+
+
+def test_phase4_manifest_records_pinned_huggingface_snapshot(tmp_path: Path) -> None:
+    revision = "fixed-revision"
+    cache = tmp_path / "model_cache"
+    snapshot = cache / "models--vendor--inpainting" / "snapshots" / revision
+    snapshot.mkdir(parents=True)
+    (snapshot / "model_index.json").write_text("{}", encoding="utf-8")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    config.data["models"]["sd15"] = {
+        "base_model": "vendor/inpainting",
+        "cache_dir": str(cache),
+        "revision": revision,
+    }
+
+    manifest = build_experiment_manifest(config, "phase4-generate", provider="qwen")
+
+    assert manifest["configured_artifacts"] == [
+        {
+            "config_key": "models.sd15.base_model",
+            "kind": "huggingface_snapshot",
+            "model_id": "vendor/inpainting",
+            "status": "resolved",
+            "revision": revision,
+            "file_count": 1,
+            "snapshot_fingerprint": manifest["configured_artifacts"][0]["snapshot_fingerprint"],
+        }
+    ]
+    assert len(manifest["configured_artifacts"][0]["snapshot_fingerprint"]) == 64
+
+
+def test_phase5_manifest_hashes_explicit_synthetic_metadata(tmp_path: Path) -> None:
+    metadata = tmp_path / "external" / "metadata.jsonl"
+    metadata.parent.mkdir(parents=True)
+    metadata.write_text('{"sample": 1}\n', encoding="utf-8")
+    expected = hashlib.sha256(metadata.read_bytes()).hexdigest()
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    config.data["phase5"] = {
+        "synthetic_metadata_path": str(metadata),
+        "synthetic_metadata_sha256": expected,
+    }
+
+    manifest = build_experiment_manifest(config, "phase5-evaluate", provider="qwen")
+
+    assert manifest["configured_artifacts"] == [
+        {
+            "config_key": "phase5.synthetic_metadata_path",
+            "configured_sha256": expected,
+            "path": str(metadata),
+            "kind": "file",
+            "size": len(metadata.read_bytes()),
+            "sha256": expected,
+        }
+    ]
+
+
+def test_r6_manifest_hashes_every_configured_evidence_input(tmp_path: Path) -> None:
+    first = tmp_path / "reports" / "r1.json"
+    second = tmp_path / "reports" / "r3.json"
+    first.parent.mkdir(parents=True)
+    first.write_bytes(b"r1")
+    second.write_bytes(b"r3")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    config.data["r6_evidence"] = {
+        "inputs": {
+            "selector_evidence": {
+                "path": str(first),
+                "sha256": hashlib.sha256(b"r1").hexdigest(),
+            },
+            "locked_candidate_analysis": {
+                "path": str(second),
+                "sha256": hashlib.sha256(b"r3").hexdigest(),
+            },
+        }
+    }
+
+    records = configured_artifact_inventory(config, "r6-evidence-package")
+
+    assert [row["config_key"] for row in records] == [
+        "r6_evidence.inputs.locked_candidate_analysis.path",
+        "r6_evidence.inputs.selector_evidence.path",
+    ]
+    assert [row["sha256"] for row in records] == [
+        hashlib.sha256(b"r3").hexdigest(),
+        hashlib.sha256(b"r1").hexdigest(),
+    ]
+    validate_governance_for_command(config, "r6-evidence-package")
+
+
+def test_visa_preparation_manifest_hashes_archive_and_official_split(tmp_path: Path) -> None:
+    archive = tmp_path / "visa.tar"
+    split = tmp_path / "1cls.csv"
+    archive.write_bytes(b"archive")
+    split.write_bytes(b"split")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    config.data["external_benchmarks"] = {
+        "visa": {
+            "archive_path": str(archive),
+            "archive_sha256": hashlib.sha256(b"archive").hexdigest(),
+            "split_path": str(split),
+            "split_sha256": hashlib.sha256(b"split").hexdigest(),
+        }
+    }
+
+    records = configured_artifact_inventory(config, "prepare-visa-benchmark")
+
+    assert [row["sha256"] for row in records] == [
+        hashlib.sha256(b"archive").hexdigest(),
+        hashlib.sha256(b"split").hexdigest(),
+    ]
 
 
 def test_generalization_contracts_validate_shapes_confidence_and_disposition() -> None:

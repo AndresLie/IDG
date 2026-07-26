@@ -19,11 +19,12 @@ from iadgen_v2.metrics import evaluate_generation
 from iadgen_v2.phase2 import evaluate_phase2_placement, run_phase2_proposals
 from iadgen_v2.phase3 import build_phase3_adaptation_cache, train_phase3_adapter, validate_phase3_adapter
 from iadgen_v2.phase4 import run_phase4_generation
-from iadgen_v2.phase5 import run_phase5_evaluation
+from iadgen_v2.phase5 import configure_phase5_runtime, run_phase5_evaluation
 from iadgen_v2.phase6 import write_phase6_preflight
 from iadgen_v2.phase9_visual import write_phase9_visual_report
 from iadgen_v2.phase10_mask_quality import run_phase10_mask_quality_ablation
 from iadgen_v2.phase11_tfidg_critic import run_phase11_tfidg_critic
+from iadgen_v2.r6_evidence import build_r6_evidence_package
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -85,15 +86,26 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument("--config", required=True, type=Path)
     sub.add_argument("--source-root", required=True, type=Path)
     sub.add_argument("--download-source", action="store_true")
+    sub = commands.add_parser("prepare-visa-benchmark")
+    sub.add_argument("--config", required=True, type=Path)
+    sub.add_argument("--download", action="store_true")
     sub = commands.add_parser("freeze-architecture")
+    sub.add_argument("--config", required=True, type=Path)
+    sub = commands.add_parser("r6-evidence-package")
     sub.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
     config = load_config(args.config)
     manifest_command = args.for_command if args.command == "experiment-manifest" else args.command
     provider = getattr(args, "provider", None)
     model = getattr(args, "model", None)
-    allow_official_masks = args.command in {"locked-evaluate", "prepare-locked-benchmark"}
+    allow_official_masks = args.command in {
+        "locked-evaluate",
+        "prepare-locked-benchmark",
+        "prepare-visa-benchmark",
+    }
     validate_governance_for_command(config, manifest_command, allow_official_masks=allow_official_masks)
+    if args.command == "phase5-evaluate":
+        configure_phase5_runtime(config)
     started = time.monotonic()
     manifest_path = write_experiment_manifest(
         config,
@@ -184,10 +196,19 @@ def _execute_command(args: argparse.Namespace, config: AppConfig, manifest_path:
             source_root=args.source_root,
             download_source=args.download_source,
         )
+    if args.command == "prepare-visa-benchmark":
+        from iadgen_v2.visa_dataset import prepare_visa_benchmark
+
+        return "VisA runtime dataset manifest written to", prepare_visa_benchmark(
+            config,
+            download=args.download,
+        )
     if args.command == "freeze-architecture":
         from iadgen_v2.architecture_freeze import freeze_generic_architecture
 
         return "frozen architecture manifest written to", freeze_generic_architecture(config)
+    if args.command == "r6-evidence-package":
+        return "R6 evidence package written to", build_r6_evidence_package(config)
     raise ValueError(f"Unsupported command: {args.command}")
 
 

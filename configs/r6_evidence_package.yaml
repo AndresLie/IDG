@@ -1,0 +1,91 @@
+project:
+  output_dir: outputs/r6_evidence_package
+  report_dir: reports/r6_evidence_package
+
+dataset:
+  root: data/mvtec_ad
+  download: false
+  seed: 1337
+  adaptation_per_defect: 3
+  targets:
+    bottle: [contamination]
+
+generation:
+  samples_per_category: 1
+  seed: 1337
+  device: cpu
+
+models:
+  mock:
+    enabled: true
+
+evaluation: {}
+
+r6_evidence:
+  output_dir: reports/r6_evidence_package
+  inputs:
+    selector_evidence:
+      path: reports/selector_evidence_pack/selector_evidence_pack.json
+      sha256: f4bd77d5af2648273c3ca89e79071f4a75765f03c82845fd2d2a0ae34d150fb1
+      evidence_tier: development-category-held-out
+      role: R1 selector contribution
+    locked_candidate_analysis:
+      path: reports/r3_locked_confirmation/locked_candidate_pool_analysis.json
+      sha256: ab8772c7b8a81575096c0be63bb98c9f5ecd10ef33181e330c4739481ea07b09
+      evidence_tier: sealed-locked-category
+      role: R3 selector confirmation and candidate ceiling
+    locked_metrics:
+      path: reports/v3_generic_evidence_locked/locked_evaluation/v3-generic-evidence-frozen-20260723/locked_metrics.csv
+      sha256: ac02dfb02a8a83d14cccc3a6882f9dc2a7dd89addd83563af67a702e615f41c1
+      evidence_tier: sealed-locked-category
+      role: R3 frozen runtime metrics
+    locked_seal:
+      path: reports/v3_generic_evidence_locked/locked_evaluation/v3-generic-evidence-frozen-20260723/seal.json
+      sha256: 34fac0b2b0b0e0c7a46e9157644146f51788dff2e1f8732f54de7bc721603f27
+      evidence_tier: sealed-locked-category
+      role: R3 locked integrity seal
+    visibility_reaudit:
+      path: reports/r4_visibility_reaudit/arbitrated_comparison/r4_visibility_reaudit.json
+      sha256: 61cede47cccea7645ab4e1daca2e222c8336b3d192788ea275dff539c7f31df3
+      evidence_tier: development-automated-critic
+      role: R4 generation critic validation
+    synthetic_utility:
+      path: reports/r5_independent_synthetic_utility_deterministic/utility_review/r5_synthetic_utility_review.json
+      sha256: fe15751a623fa124ded445928cf1c836039a50a6114254bf2a9512dfc135f195
+      evidence_tier: development-deterministic-downstream
+      role: R5 independent utility result
+  external_baselines:
+    mvtec_ad_2:
+      name: MVTec AD 2
+      kind: external_dataset
+      official_url: https://www.mvtec.com/research-teaching/datasets/mvtec-ad-2
+      protocol: public test labels plus private evaluation server
+      required_paths:
+        - data/mvtec_ad_2
+    subspacead:
+      name: Official SubspaceAD
+      kind: external_baseline
+      official_url: https://arxiv.org/abs/2602.23013
+      official_repository: https://github.com/CLendering/SubspaceAD
+      official_commit: 3c5356619435b85a5765467709ead6ff8bd733ac
+      protocol: facebook/dinov2-with-registers-giant, image size 672, 1-shot, 30 augmentations, PCA EV 0.99
+      required_python_modules:
+        - anomalib
+      required_paths:
+        - model_cache/models--facebook--dinov2-with-registers-giant
+    visa:
+      name: VisA
+      kind: external_dataset
+      official_url: https://registry.opendata.aws/visa/
+      protocol: official Amazon Visual Anomaly dataset, official 1cls split, runtime/reference isolation
+      required_paths:
+        - data/visa_runtime/visa_runtime_dataset_manifest.json
+
+research_governance:
+  enabled: true
+  architecture_tag: r6-evidence-package-v1
+  experiment_track: external-baselines-and-paper-package
+  development_categories: [bottle]
+  locked_categories: []
+  enforce_official_mask_isolation: true
+  dataset_fingerprint_mode: sha256

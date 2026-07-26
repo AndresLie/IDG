@@ -1,0 +1,138 @@
+project:
+  output_dir: outputs/v3_generic_evidence_visa
+  report_dir: reports/v3_generic_evidence_visa
+
+dataset:
+  root: data/visa_runtime
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    candle: [bad]
+    capsules: [bad]
+    cashew: [bad]
+    chewinggum: [bad]
+    fryum: [bad]
+    macaroni1: [bad]
+    macaroni2: [bad]
+    pcb1: [bad]
+    pcb2: [bad]
+    pcb3: [bad]
+    pcb4: [bad]
+    pipe_fryum: [bad]
+
+generation:
+  samples_per_category: 10
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect: {}
+  negative_prompt: "text, watermark, logo, unrealistic artifact"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation:
+  visibility_threshold: 0.02
+  segmentation_metrics:
+    threshold: 0.5
+
+external_benchmarks:
+  visa:
+    archive_url: https://amazon-visual-anomaly.s3.us-west-2.amazonaws.com/VisA_20220922.tar
+    archive_path: data/visa_source/_archives/VisA_20220922.tar
+    archive_size: 1929840640
+    archive_sha256: 2eb8690c803ab37de0324772964100169ec8ba1fa3f7e94291c9ca673f40f362
+    split_url: https://raw.githubusercontent.com/amazon-science/spot-diff/2a692ab575001cbde74d402d897a7286086c6199/split_csv/1cls.csv
+    split_path: data/visa_source/_official/1cls.csv
+    split_size: 660329
+    split_sha256: a48557e6033318cb90556f706196bc9d247a776a23ea51aecee5a80dd0332995
+    source_extract_root: data/visa_source/extracted
+    official_repository: https://github.com/amazon-science/spot-diff
+    official_commit: 2a692ab575001cbde74d402d897a7286086c6199
+
+research_governance:
+  enabled: true
+  architecture_tag: v3-generic-evidence-frozen-20260723
+  experiment_track: external-generalization-visa
+  development_categories: [bottle, zipper, wood, metal_nut, tile]
+  locked_categories:
+    - candle
+    - capsules
+    - cashew
+    - chewinggum
+    - fryum
+    - macaroni1
+    - macaroni2
+    - pcb1
+    - pcb2
+    - pcb3
+    - pcb4
+    - pipe_fryum
+  locked_official_mask_roots: [data/visa_official_reference_masks]
+  locked_preregistration_path: visa_external_preregistration.yaml
+  frozen_architecture_manifest: reports/v3_generic_evidence_development/architecture_freeze/v3-generic-evidence-rc1.json
+  enforce_official_mask_isolation: true
+  dataset_fingerprint_mode: sha256
+
+auto_masks:
+  architecture: generic_evidence
+  specialists: disabled
+  provider: qwen
+  publish_dataset_ground_truth: false
+  overwrite: true
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  qwen_prompt_style: defect_localization_json
+  min_box_area_ratio: 0.001
+  max_box_area_ratio: 0.60
+  allow_localization_fallback: true
+  localization_fallback_mode: full_image
+  min_component_area: 12
+  ground_truth_mask_variant: eval_tight
+  eval_mask_variant: eval_tight
+  training_mask_variant: training_medium
+  write_overlays: true
+  write_variant_overlays: false
+  sam_provider: sam2
+  sam2_checkpoint: model_cache/sam2/sam2.1_hiera_tiny.pt
+  sam2_model_cfg: configs/sam2.1/sam2.1_hiera_t.yaml
+  sam_device: cuda
+  dinov2_model: facebook/dinov2-small
+  dinov2_cache_dir: model_cache/huggingface/hub
+  dinov2_local_files_only: true
+  dinov2_device: auto
+  selector_model_path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.joblib
+  generic_evidence:
+    edge_refine: true
+    dinov2_enabled: true
+    dinov2_scales: [448]
+    dinov2_layers: [-4, -1]
+    dinov2_memory_stride: 4
+    registered_residual_enabled: false
+    registration_scale: 448
+    registration_min_inlier_ratio: 0.25
+    registration_max_reprojection_error: 8.0
+    musc_enabled: false
+    musc_patch_size: 17
+    musc_stride: 6
+    musc_knn_k: 5
+    musc_max_memory_patches: 4096
+    texture_residual_enabled: true
+    sam2_enabled: true
+    sam_positive_points: 5
+    sam_negative_points: 4
+    max_normals: 6
+    widen_on_repeated_texture: true
+  selector_training:
+    seed: 20260722
+    max_normals_per_category: 12
+    corruptions_per_image: 6

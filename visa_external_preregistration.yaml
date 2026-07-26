@@ -1,0 +1,55 @@
+schema_version: 1
+experiment: visa_external_generalization
+status: frozen_before_runtime_inference
+
+dataset:
+  name: VisA
+  protocol: official_1cls_split
+  categories:
+    - candle
+    - capsules
+    - cashew
+    - chewinggum
+    - fryum
+    - macaroni1
+    - macaroni2
+    - pcb1
+    - pcb2
+    - pcb3
+    - pcb4
+    - pipe_fryum
+  runtime_inputs:
+    - official train-normal images
+    - official test-normal images
+    - official anomalous test images
+  isolated_evaluation_inputs:
+    - official pixel masks
+
+method:
+  architecture_tag: v3-generic-evidence-frozen-20260723
+  specialists: disabled
+  pca_subspace: disabled
+  selector: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.joblib
+  selector_sha256: 1f7fdb0c216f34f1c6b5f1561416f4dfcb5d2da00350347825190c53c5a91a68
+  post_access_tuning: forbidden
+
+evaluation:
+  primary_endpoint: category_macro_dice
+  secondary_endpoints:
+    - category_macro_precision
+    - category_macro_recall
+    - category_macro_search_region_recall
+    - category_macro_pixel_ap
+    - category_macro_aupro
+    - zero_dice_image_count
+  report:
+    - category_macro
+    - per_category
+    - worst_category
+    - runtime
+    - peak_gpu_memory
+
+decision:
+  purpose: external_generalization_measurement
+  failure_policy: report_all_failures_without_category_specific_retuning
+  comparison_policy: literature_scores_are_not_local_measurements
