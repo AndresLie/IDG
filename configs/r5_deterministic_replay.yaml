@@ -1,0 +1,92 @@
+project:
+  output_dir: outputs/r5_deterministic_replay
+  report_dir: reports/r5_deterministic_replay
+
+dataset:
+  root: data/mvtec_ad
+  download: false
+  seed: 1337
+  adaptation_per_defect: 3
+  targets:
+    metal_nut: [scratch]
+    tile: [crack]
+    wood: [scratch]
+
+generation:
+  samples_per_category: 1
+  seed: 1337
+  device: cuda
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation: {}
+
+phase4:
+  provider: qwen
+
+phase5:
+  provider: qwen
+  device: cuda
+  image_size: 64
+  epochs: 1
+  optimizer_steps: 12
+  paired_initialization: true
+  deterministic_training: true
+  deterministic_cublas_workspace_config: ":4096:8"
+  learning_rate: 0.0003
+  dice_loss_weight: 0.5
+  focal_loss_weight: 0.25
+  focal_gamma: 2.0
+  uncertainty_loss_weight: 0.25
+  positive_core_loss_weight: 2.0
+  max_pos_weight: 25.0
+  threshold: 0.5
+  threshold_policy: adaptation_dice
+  min_predicted_positive_rate: 0.001
+  max_predicted_positive_rate: 0.15
+  target_predicted_positive_rate: 0.03
+  held_out_per_category: 3
+  normal_evaluation_holdout_per_category: 3
+  synthetic_ratios: [0.0, 0.25]
+  repeated_seeds: [1337]
+  class_balanced_synthetic: true
+  evaluators: [supervised_resnet18_unet]
+  synthetic_metadata_path: outputs/r4_visibility_reaudit/arbitrated/metadata.jsonl
+  synthetic_metadata_sha256: df880dad63fc3479639bc8bc37985628a26db7c4335a5d21789fd67054dc79a4
+  synthetic_source_label: critic_arbitrated
+  pretrained_student:
+    architecture: resnet18_unet
+    weights: default
+    freeze_encoder: false
+    decoder_channels: 64
+  sd_clean_inpaint_negatives:
+    enabled: false
+  supervised_normal_negatives:
+    enabled: true
+    max_samples: 12
+  quality_filtered_training:
+    enabled: false
+  synthetic_selector:
+    enabled: true
+    require_generation_critic_acceptance: true
+    max_per_group: 24
+    group_by: [category, defect_type, morphology]
+    min_defect_visibility_score: 0.0
+    max_background_l1: 1.0
+    max_outside_refined_change_fraction: 1.0
+    max_inpaint_area_fraction: 1.0
+    reject_quality_flags: false
+  human_audit:
+    enabled: false
+
+research_governance:
+  enabled: true
+  architecture_tag: r5-deterministic-replay-v1
+  experiment_track: deterministic-training-replay
+  development_categories: [metal_nut, tile, wood]
+  locked_categories: []
+  enforce_official_mask_isolation: true

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
+import os
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,10 +20,16 @@ from iadgen_v2.dataset import load_manifest
 from iadgen_v2.phase4 import PHASE4_SCHEMA_VERSION, _phase4_fingerprint
 from iadgen_v2.phase4 import PHASE4_QUALITY_PROFILES
 from iadgen_v2.records import write_json
-from iadgen_v2.segmentation import segmentation_metrics
+from iadgen_v2.segmentation import binary_auroc, segmentation_metrics
 
 
-PHASE5_SCHEMA_VERSION = 10
+PHASE5_SCHEMA_VERSION = 12
+_DEFAULT_CUBLAS_WORKSPACE_CONFIG = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+_DEFAULT_DETERMINISTIC_ALGORITHMS = bool(torch.are_deterministic_algorithms_enabled())
+_DEFAULT_CUDNN_DETERMINISTIC = bool(torch.backends.cudnn.deterministic)
+_DEFAULT_CUDNN_BENCHMARK = bool(torch.backends.cudnn.benchmark)
+_DEFAULT_CUDA_MATMUL_ALLOW_TF32 = bool(torch.backends.cuda.matmul.allow_tf32)
+_DEFAULT_CUDNN_ALLOW_TF32 = bool(torch.backends.cudnn.allow_tf32)
 
 
 @dataclass(frozen=True)
@@ -38,8 +46,31 @@ class SegmentationSample:
     possible_region_path: str | None = None
 
 
+@dataclass(frozen=True)
+class DeterminismContract:
+    enabled: bool
+    deterministic_algorithms: bool
+    cudnn_deterministic: bool
+    cudnn_benchmark: bool
+    cublas_workspace_config: str
+    cuda_matmul_allow_tf32: bool
+    cudnn_allow_tf32: bool
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "deterministic_algorithms": self.deterministic_algorithms,
+            "cudnn_deterministic": self.cudnn_deterministic,
+            "cudnn_benchmark": self.cudnn_benchmark,
+            "cublas_workspace_config": self.cublas_workspace_config,
+            "cuda_matmul_allow_tf32": self.cuda_matmul_allow_tf32,
+            "cudnn_allow_tf32": self.cudnn_allow_tf32,
+        }
+
+
 def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Path:
     phase5 = _phase5_config(config)
+    determinism = configure_phase5_runtime(config)
     provider = provider or str(phase5.get("provider", "heuristic"))
     if provider not in {"heuristic", "qwen"}:
         raise ValueError(f"Unsupported Phase 5 provider: {provider}")
@@ -49,6 +80,9 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
     real_train, held_out = _real_split_samples(manifest, int(phase5.get("held_out_per_category", 12)))
     clean_negatives = _clean_inpaint_negative_samples(config, manifest, phase5, provider, seed)
     normal_train = _normal_split_samples(manifest)
+    normal_train, normal_evaluation = _normal_evaluation_split(normal_train, phase5, seed)
+    held_out_anomaly_count = len(held_out)
+    held_out = held_out + normal_evaluation
     supervised_normals = _supervised_normal_negative_samples(normal_train, phase5, seed)
     if not real_train:
         raise ValueError("Phase 5 needs at least one real adaptation sample")
@@ -79,7 +113,14 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
     report_dir.mkdir(parents=True, exist_ok=True)
     audit_manifest = _write_human_audit_manifest(report_dir, manifest, phase5, provider)
     mask_policy_report = _write_mask_policy_validation_report(report_dir, manifest, provider)
-    if "tiny_unet" in evaluators:
+    supervised_evaluators = [
+        evaluator
+        for evaluator in ("tiny_unet", "supervised_resnet18_unet")
+        if evaluator in evaluators
+    ]
+    for supervised_index, evaluator in enumerate(supervised_evaluators):
+        architecture = "tiny_unet" if evaluator == "tiny_unet" else "resnet18_unet"
+        selector_log_target = selector_logs if supervised_index == 0 else None
         if variant_specs:
             for run_seed in run_seeds:
                 metrics = _train_and_evaluate(
@@ -88,9 +129,10 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
                     held_out,
                     0.0,
                     run_seed,
-                    _prediction_dir(report_dir, "tiny_unet", "real_only", "none", 0.0, run_seed),
+                    _prediction_dir(report_dir, evaluator, "real_only", "none", 0.0, run_seed),
+                    architecture=architecture,
                 )
-                metrics["evaluator"] = "tiny_unet"
+                metrics["evaluator"] = evaluator
                 metrics["variant"] = "real_only"
                 metrics["quality_profile"] = "none"
                 metrics["run_seed"] = run_seed
@@ -102,7 +144,7 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
                     spec["variant"],
                     spec["quality_profile"],
                     phase5,
-                    selector_logs=selector_logs if "tiny_unet" not in evaluators else None,
+                    selector_logs=selector_log_target,
                 )
                 synthetic_counts[spec["label"]] = len(synthetic)
                 if not synthetic:
@@ -117,23 +159,31 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
                             train_samples,
                             held_out,
                             ratio,
-                            run_seed + (variant_index + 1) * 100_003 + ratio_index * 9973,
-                            _prediction_dir(report_dir, "tiny_unet", spec["label"], spec["quality_profile"] or "all", ratio, run_seed),
+                            _phase5_training_seed(
+                                phase5,
+                                run_seed,
+                                (variant_index + 1) * 100_003 + ratio_index * 9973,
+                            ),
+                            _prediction_dir(report_dir, evaluator, spec["label"], spec["quality_profile"] or "all", ratio, run_seed),
+                            architecture=architecture,
                         )
-                        metrics["evaluator"] = "tiny_unet"
+                        metrics["evaluator"] = evaluator
                         metrics["variant"] = spec["label"]
                         metrics["quality_profile"] = spec["quality_profile"] or "all"
                         metrics["run_seed"] = run_seed
                         rows.append(metrics)
         else:
+            source_label = str(phase5.get("synthetic_source_label", provider))
             synthetic = _phase4_synthetic_samples(
                 config,
                 provider,
                 phase5=phase5,
-                selector_logs=selector_logs if "tiny_unet" not in evaluators else None,
+                selector_logs=selector_log_target,
             )
-            synthetic_counts[provider] = len(synthetic)
+            synthetic_counts[source_label] = len(synthetic)
             for index, ratio in enumerate(ratios):
+                result_variant = "real_only" if ratio <= 0.0 else source_label
+                result_profile = "none" if ratio <= 0.0 else "all"
                 train_samples = _mix_samples(real_train, synthetic, ratio, seed, bool(phase5.get("class_balanced_synthetic", False)))
                 train_samples.extend(clean_negatives)
                 train_samples.extend(supervised_normals)
@@ -143,12 +193,13 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
                         train_samples,
                         held_out,
                         ratio,
-                        run_seed + index * 9973,
-                        _prediction_dir(report_dir, "tiny_unet", provider, "all", ratio, run_seed),
+                        _phase5_training_seed(phase5, run_seed, index * 9973),
+                        _prediction_dir(report_dir, evaluator, result_variant, result_profile, ratio, run_seed),
+                        architecture=architecture,
                     )
-                    metrics["evaluator"] = "tiny_unet"
-                    metrics["variant"] = provider
-                    metrics["quality_profile"] = "all"
+                    metrics["evaluator"] = evaluator
+                    metrics["variant"] = result_variant
+                    metrics["quality_profile"] = result_profile
                     metrics["run_seed"] = run_seed
                     rows.append(metrics)
     if "patchcore_guided_tiny_unet" in evaluators:
@@ -623,6 +674,18 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
             metrics["quality_profile"] = "none"
             metrics["run_seed"] = run_seed
             rows.append(metrics)
+    for row in rows:
+        row.update(
+            {
+                "deterministic_training": int(determinism.enabled),
+                "deterministic_algorithms": int(determinism.deterministic_algorithms),
+                "cudnn_deterministic": int(determinism.cudnn_deterministic),
+                "cudnn_benchmark": int(determinism.cudnn_benchmark),
+                "cublas_workspace_config": determinism.cublas_workspace_config,
+                "cuda_matmul_allow_tf32": int(determinism.cuda_matmul_allow_tf32),
+                "cudnn_allow_tf32": int(determinism.cudnn_allow_tf32),
+            }
+        )
     csv_path = report_dir / "segmentation_results.csv"
     selector_report = _write_synthetic_selector_reports(report_dir, selector_logs, phase5)
     _write_csv(csv_path, rows)
@@ -648,7 +711,7 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
         {
             "provider": provider,
             "evaluators": evaluators,
-            "variants": variants or [provider],
+            "variants": variants or [str(phase5.get("synthetic_source_label", provider))],
             "phase5_fingerprint": _phase5_fingerprint(config, provider),
             "schema_version": PHASE5_SCHEMA_VERSION,
             "real_adaptation_samples": len(real_train),
@@ -657,6 +720,8 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
             "supervised_normal_negative_samples": len(supervised_normals),
             "synthetic_samples": synthetic_counts,
             "held_out_samples": len(held_out),
+            "held_out_anomaly_samples": held_out_anomaly_count,
+            "held_out_normal_samples": len(normal_evaluation),
             "held_out_by_category": _count_by_category(held_out),
             "human_audit_manifest": str(audit_manifest),
             "mask_policy_validation_report": str(mask_policy_report),
@@ -664,10 +729,15 @@ def run_phase5_evaluation(config: AppConfig, provider: str | None = None) -> Pat
             "variant_ratio_arbitration_report": str(arbitration_report),
             "ratios": ratios,
             "run_seeds": run_seeds,
+            "determinism": determinism.as_dict(),
             "note": _provider_note(provider),
         },
     )
     return csv_path
+
+
+def configure_phase5_runtime(config: AppConfig) -> DeterminismContract:
+    return _configure_phase5_determinism(_phase5_config(config))
 
 
 def _real_split_samples(manifest: dict[str, Any], held_out_per_category: int) -> tuple[list[SegmentationSample], list[SegmentationSample]]:
@@ -732,6 +802,39 @@ def _normal_split_samples(manifest: dict[str, Any]) -> list[SegmentationSample]:
     return samples
 
 
+def _normal_evaluation_split(
+    samples: list[SegmentationSample],
+    phase5: dict[str, Any],
+    seed: int,
+) -> tuple[list[SegmentationSample], list[SegmentationSample]]:
+    per_category = int(phase5.get("normal_evaluation_holdout_per_category", 0))
+    if per_category <= 0:
+        return list(samples), []
+    grouped: dict[str, list[SegmentationSample]] = {}
+    for sample in samples:
+        grouped.setdefault(sample.category, []).append(sample)
+    train: list[SegmentationSample] = []
+    evaluation: list[SegmentationSample] = []
+    for category, values in sorted(grouped.items()):
+        ordered = sorted(values, key=lambda sample: sample.image_path)
+        rng = random.Random(seed + _stable_seed_offset(f"normal-evaluation:{category}"))
+        rng.shuffle(ordered)
+        holdout_count = min(per_category, max(0, len(ordered) - 1))
+        for sample in ordered[:holdout_count]:
+            evaluation.append(
+                SegmentationSample(
+                    image_path=sample.image_path,
+                    mask_path="",
+                    category=sample.category,
+                    defect_type=sample.defect_type,
+                    source="held_out_normal",
+                    morphology="normal",
+                )
+            )
+        train.extend(ordered[holdout_count:])
+    return train, evaluation
+
+
 def _supervised_normal_negative_samples(
     normal_samples: list[SegmentationSample],
     phase5: dict[str, Any],
@@ -781,6 +884,7 @@ def _phase5_evaluators(phase5: dict[str, Any]) -> list[str]:
     normalized = [aliases.get(value, value) for value in evaluators]
     allowed = {
         "tiny_unet",
+        "supervised_resnet18_unet",
         "patchcore_guided_tiny_unet",
         "patchcore_distilled_tiny_unet",
         "teacher_refined_tiny_unet",
@@ -1078,11 +1182,23 @@ def _phase4_synthetic_samples(
     phase5: dict[str, Any] | None = None,
     selector_logs: list[dict[str, Any]] | None = None,
 ) -> list[SegmentationSample]:
+    phase5 = phase5 or {}
     path = _phase4_metadata_path(config, provider, variant)
     if not path.exists():
         raise FileNotFoundError(f"Missing Phase 4 metadata: {path}")
+    explicit_path = _explicit_synthetic_metadata_path(config, phase5)
     expected = _phase4_fingerprint(config, provider)
-    tfidg_metrics = _phase11_tfidg_metric_index(config, provider, phase5 or {})
+    if explicit_path is not None:
+        expected_sha256 = str(phase5.get("synthetic_metadata_sha256", "")).strip().lower()
+        if len(expected_sha256) != 64:
+            raise ValueError("phase5.synthetic_metadata_sha256 is required for an explicit synthetic metadata input")
+        actual_sha256 = _sha256_path(path)
+        if actual_sha256 != expected_sha256:
+            raise ValueError(
+                "Explicit Phase 5 synthetic metadata hash mismatch: "
+                f"expected {expected_sha256}, found {actual_sha256}"
+            )
+    tfidg_metrics = _phase11_tfidg_metric_index(config, provider, phase5)
     candidates: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for line in path.read_text(encoding="utf-8").splitlines():
         if not line.strip():
@@ -1093,16 +1209,16 @@ def _phase4_synthetic_samples(
         settings = row.get("settings", {})
         if settings.get("phase4_schema_version") != PHASE4_SCHEMA_VERSION:
             raise ValueError("Phase 4 metadata schema is stale; regenerate Phase 4 outputs first.")
-        if settings.get("phase4_fingerprint") != expected:
+        if explicit_path is None and settings.get("phase4_fingerprint") != expected:
             raise ValueError("Phase 4 metadata does not match the active configuration; regenerate Phase 4 outputs first.")
         if not Path(row["output_path"]).exists() or not Path(row["refined_mask_path"]).exists():
             raise FileNotFoundError(f"Missing Phase 4 output or mask for {row.get('output_path')}")
         metrics = tfidg_metrics.get(str(row["output_path"]))
         if metrics is not None:
             row = {**row, "tfidg_lite": metrics}
-        decision = _synthetic_selector_decision(row, phase5 or {})
+        decision = _synthetic_selector_decision(row, phase5)
         candidates.append((row, decision))
-    selected_keys = _selected_candidate_keys(candidates, phase5 or {})
+    selected_keys = _selected_candidate_keys(candidates, phase5)
     samples: list[SegmentationSample] = []
     for row, decision in candidates:
         candidate_key = _phase4_candidate_key(row)
@@ -1263,6 +1379,11 @@ def _synthetic_selector_decision(row: dict[str, Any], phase5: dict[str, Any]) ->
         reject_reasons.append("high_outside_refined_change")
     if inpaint_area > float(selector.get("max_inpaint_area_fraction", phase5.get("max_inpaint_area_fraction", 0.20))):
         reject_reasons.append("overbroad_inpaint_mask")
+    generation_critic = row.get("critic_guided_generation", {})
+    if bool(selector.get("require_generation_critic_acceptance", False)) and (
+        not isinstance(generation_critic, dict) or not bool(generation_critic.get("accepted", False))
+    ):
+        reject_reasons.append("generation_critic_rejected")
     if tfidg_enabled:
         if not tfidg and bool(tfidg_settings.get("reject_missing_metrics", True)):
             reject_reasons.append("missing_tfidg_lite_metrics")
@@ -1686,9 +1807,17 @@ def _synthetic_selector_summary(selector_logs: list[dict[str, Any]]) -> dict[str
 
 
 def _phase4_metadata_path(config: AppConfig, provider: str, variant: str | None = None) -> Path:
+    explicit = _explicit_synthetic_metadata_path(config, _phase5_config(config))
+    if explicit is not None:
+        return explicit
     if provider == "qwen" and variant:
         return config.output_dir / "phase4" / provider / variant / "metadata.jsonl"
     return config.output_dir / "phase4" / provider / "metadata.jsonl"
+
+
+def _explicit_synthetic_metadata_path(config: AppConfig, phase5: dict[str, Any]) -> Path | None:
+    value = phase5.get("synthetic_metadata_path")
+    return config.resolve_path(str(value)) if value else None
 
 
 def _phase5_variants(config: AppConfig, provider: str) -> list[str]:
@@ -2196,6 +2325,33 @@ class _PatchCoreTeacherCache:
         return self.teacher
 
 
+def _training_sample_schedule(
+    train_samples: list[SegmentationSample],
+    epochs: int,
+    phase5: dict[str, Any],
+    rng: random.Random,
+) -> list[SegmentationSample]:
+    if not train_samples:
+        raise ValueError("Phase 5 supervised training requires at least one sample")
+    configured_steps = phase5.get("optimizer_steps")
+    if configured_steps is None:
+        scheduled: list[SegmentationSample] = []
+        for _ in range(epochs):
+            shuffled = list(train_samples)
+            rng.shuffle(shuffled)
+            scheduled.extend(shuffled)
+        return scheduled
+    optimizer_steps = int(configured_steps)
+    if optimizer_steps <= 0:
+        raise ValueError("phase5.optimizer_steps must be positive when configured")
+    scheduled = []
+    while len(scheduled) < optimizer_steps:
+        shuffled = list(train_samples)
+        rng.shuffle(shuffled)
+        scheduled.extend(shuffled[: optimizer_steps - len(scheduled)])
+    return scheduled
+
+
 def _train_and_evaluate(
     config: AppConfig,
     train_samples: list[SegmentationSample],
@@ -2203,13 +2359,23 @@ def _train_and_evaluate(
     synthetic_ratio: float,
     seed: int,
     prediction_dir: Path | None = None,
+    *,
+    architecture: str = "tiny_unet",
 ) -> dict[str, Any]:
     phase5 = _phase5_config(config)
+    _seed_everything(seed)
     device = _phase5_device(config)
     image_size = int(phase5.get("image_size", 96))
     epochs = int(phase5.get("epochs", 2))
     learning_rate = float(phase5.get("learning_rate", 1e-3))
-    model = TinyUNet(base_channels=int(phase5.get("base_channels", 8))).to(device)
+    if architecture == "tiny_unet":
+        model = TinyUNet(base_channels=int(phase5.get("base_channels", 8))).to(device)
+        model_note = "tiny_unet_smoke"
+    elif architecture == "resnet18_unet":
+        model = _build_resnet18_unet_student(phase5).to(device)
+        model_note = "supervised_resnet18_unet_no_teacher_no_score_fusion"
+    else:
+        raise ValueError(f"Unsupported supervised Phase 5 architecture: {architecture}")
     optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
     pos_weight = _positive_weight(train_samples, image_size, device, float(phase5.get("max_pos_weight", 25.0)))
     pos_weight_tensor = torch.tensor([pos_weight], device=device).view(1, 1, 1, 1)
@@ -2220,26 +2386,24 @@ def _train_and_evaluate(
     rng = random.Random(seed + int(synthetic_ratio * 1000))
     losses: list[float] = []
     model.train()
-    for _ in range(epochs):
-        shuffled = list(train_samples)
-        rng.shuffle(shuffled)
-        for sample in shuffled:
-            image, mask = _load_tensor_pair(sample, image_size, device)
-            loss_weight = _load_loss_weight(sample, image_size, device, phase5)
-            logits = model(image.unsqueeze(0))
-            target = mask.unsqueeze(0)
-            weight = loss_weight.unsqueeze(0)
-            loss = _weighted_bce_with_logits(logits, target, weight, pos_weight_tensor) + dice_loss_weight * _soft_dice_loss(
-                logits,
-                target,
-                weight=weight,
-            )
-            if focal_loss_weight > 0.0:
-                loss = loss + focal_loss_weight * _weighted_focal_loss(logits, target, weight, gamma=focal_gamma)
-            optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            optimizer.step()
-            losses.append(float(loss.detach().cpu()))
+    training_schedule = _training_sample_schedule(train_samples, epochs, phase5, rng)
+    for sample in training_schedule:
+        image, mask = _load_tensor_pair(sample, image_size, device)
+        loss_weight = _load_loss_weight(sample, image_size, device, phase5)
+        logits = model(image.unsqueeze(0))
+        target = mask.unsqueeze(0)
+        weight = loss_weight.unsqueeze(0)
+        loss = _weighted_bce_with_logits(logits, target, weight, pos_weight_tensor) + dice_loss_weight * _soft_dice_loss(
+            logits,
+            target,
+            weight=weight,
+        )
+        if focal_loss_weight > 0.0:
+            loss = loss + focal_loss_weight * _weighted_focal_loss(logits, target, weight, gamma=focal_gamma)
+        optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        optimizer.step()
+        losses.append(float(loss.detach().cpu()))
     model.eval()
     metric_rows: list[dict[str, float]] = []
     with torch.no_grad():
@@ -2256,6 +2420,7 @@ def _train_and_evaluate(
         metric_rows.append(segmentation_metrics(item["score"], item["truth"], threshold=selected_threshold))
     morphology_metrics = _evaluate_scores_by_morphology(held_out_scores, selected_threshold)
     prediction_contact_sheet = _write_prediction_examples(prediction_dir, held_out_scores, selected_threshold)
+    per_image_metrics = _write_per_image_metrics(prediction_dir, held_out_scores, selected_threshold)
     clean_negative_count = sum(1 for sample in train_samples if sample.source == "sd_clean_inpaint_negative")
     supervised_normal_count = sum(1 for sample in train_samples if sample.source == "supervised_normal_negative")
     synthetic_count = sum(
@@ -2272,6 +2437,10 @@ def _train_and_evaluate(
         "train_supervised_normal_count": supervised_normal_count,
         "held_out_count": len(held_out),
         "epochs": epochs,
+        "optimizer_steps": len(losses),
+        "training_seed": seed,
+        "training_schedule_fingerprint": _training_schedule_fingerprint(training_schedule),
+        "student_architecture": architecture,
         "image_size": image_size,
         "pos_weight": pos_weight,
         "dice_loss_weight": dice_loss_weight,
@@ -2291,7 +2460,9 @@ def _train_and_evaluate(
         "predicted_positive_rate": selected_metrics["predicted_positive_rate"],
         "truth_positive_rate": selected_metrics["truth_positive_rate"],
         "pixel_auroc": _mean_metric(metric_rows, "pixel_auroc"),
+        "pixel_ap": _mean_metric(metric_rows, "pixel_ap"),
         "aupro": _mean_metric(metric_rows, "aupro"),
+        "image_auroc": _image_level_auroc(held_out_scores),
         "iou": selected_metrics["iou"],
         "dice": selected_metrics["dice"],
         "fixed_predicted_positive_rate": fixed_metrics["predicted_positive_rate"],
@@ -2301,7 +2472,8 @@ def _train_and_evaluate(
         "score_p95": selected_metrics["score_p95"],
         "morphology_metrics": morphology_metrics,
         "prediction_contact_sheet": str(prediction_contact_sheet) if prediction_contact_sheet else "",
-        "note": "tiny_unet_smoke",
+        "per_image_metrics_path": str(per_image_metrics) if per_image_metrics else "",
+        "note": model_note,
     }
 
 
@@ -3448,6 +3620,17 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "train_supervised_normal_count",
         "held_out_count",
         "epochs",
+        "optimizer_steps",
+        "training_seed",
+        "training_schedule_fingerprint",
+        "deterministic_training",
+        "deterministic_algorithms",
+        "cudnn_deterministic",
+        "cudnn_benchmark",
+        "cublas_workspace_config",
+        "cuda_matmul_allow_tf32",
+        "cudnn_allow_tf32",
+        "student_architecture",
         "image_size",
         "pos_weight",
         "dice_loss_weight",
@@ -3493,7 +3676,9 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "predicted_positive_rate",
         "truth_positive_rate",
         "pixel_auroc",
+        "pixel_ap",
         "aupro",
+        "image_auroc",
         "iou",
         "dice",
         "fixed_predicted_positive_rate",
@@ -3503,6 +3688,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         "score_p95",
         "morphology_metrics",
         "prediction_contact_sheet",
+        "per_image_metrics_path",
         "note",
     ]
     with path.open("w", encoding="utf-8", newline="") as handle:
@@ -3761,21 +3947,11 @@ def _ratio_guidance(rows: list[dict[str, Any]]) -> str | None:
 
 
 def _provider_note(provider: str) -> str:
-    if provider == "qwen":
-        return (
-            "This is a tiny U-Net downstream smoke scaffold using real Qwen/SD1.5 Phase 4 synthetic outputs; "
-            "it preserves no-leakage split discipline. When enabled, `patchcore_resnet` is a WideResNet50-2 "
-            "normal-memory PatchCore-style baseline; `patchcore_lite` is a local handcrafted fallback. "
-            "`patchcore_guided_tiny_unet` fuses the supervised tiny-U-Net score with a normal-memory PatchCore prior "
-            "to diagnose whether calibration improves when synthetic supervision is anchored by normality evidence. "
-            "`patchcore_distilled_tiny_unet` trains the student with an additional PatchCore teacher-map loss. "
-            "`teacher_refined_tiny_unet` uses PatchCore confidence to refine pseudo-label positives, negatives, and ignore weights. "
-            "`teacher_refined_resnet18_unet` keeps that label policy but replaces the tiny student with a ResNet18 U-Net. "
-            "`patchcore_guided_teacher_refined_resnet18_unet` then fuses that ResNet18 student score with the PatchCore teacher prior."
-        )
+    source = "real Qwen/SD1.5" if provider == "qwen" else "heuristic"
     return (
-        "This is a tiny U-Net downstream scaffold using heuristic Phase 4 synthetic outputs; "
-        "it preserves no-leakage split discipline. When enabled, `patchcore_resnet` is a WideResNet50-2 "
+        f"This Phase 5 evaluator suite uses {source} Phase 4 synthetic outputs and preserves no-leakage split discipline. "
+        "`supervised_resnet18_unet` is an independent supervised student with no PatchCore label refinement or score fusion. "
+        "When enabled, `patchcore_resnet` is a WideResNet50-2 "
         "normal-memory PatchCore-style baseline; `patchcore_lite` is a local handcrafted fallback. "
         "`patchcore_guided_tiny_unet` fuses the supervised tiny-U-Net score with a normal-memory PatchCore prior. "
         "`patchcore_distilled_tiny_unet` trains the student with an additional PatchCore teacher-map loss. "
@@ -3842,6 +4018,7 @@ def _score_samples(
             {
                 "score": score,
                 "truth": truth,
+                "source": sample.source,
                 "morphology": sample.morphology,
                 "image_path": sample.image_path,
                 "mask_path": sample.mask_path,
@@ -3976,6 +4153,7 @@ def _evaluate_scores_by_morphology(score_rows: list[dict[str, np.ndarray]], thre
         result[morphology] = {
             "count": float(len(values)),
             "pixel_auroc": _mean_metric(metric_rows, "pixel_auroc"),
+            "pixel_ap": _mean_metric(metric_rows, "pixel_ap"),
             "aupro": _mean_metric(metric_rows, "aupro"),
             "iou": aggregate["iou"],
             "dice": aggregate["dice"],
@@ -3983,6 +4161,57 @@ def _evaluate_scores_by_morphology(score_rows: list[dict[str, np.ndarray]], thre
             "truth_positive_rate": aggregate["truth_positive_rate"],
         }
     return result
+
+
+def _image_level_auroc(score_rows: list[dict[str, Any]]) -> float:
+    if not score_rows:
+        return math.nan
+    scores = np.asarray(
+        [float(np.asarray(item["score"], dtype=np.float32).max()) for item in score_rows],
+        dtype=np.float64,
+    )
+    labels = np.asarray(
+        [int(np.asarray(item["truth"], dtype=np.float32).max() > 0.0) for item in score_rows],
+        dtype=np.uint8,
+    )
+    return binary_auroc(scores, labels)
+
+
+def _write_per_image_metrics(
+    prediction_dir: Path | None,
+    score_rows: list[dict[str, Any]],
+    threshold: float,
+) -> Path | None:
+    if prediction_dir is None or not score_rows:
+        return None
+    prediction_dir.mkdir(parents=True, exist_ok=True)
+    path = prediction_dir / "per_image_metrics.jsonl"
+    rows: list[str] = []
+    for item in score_rows:
+        score = np.asarray(item["score"], dtype=np.float32)
+        truth = np.asarray(item["truth"], dtype=np.float32)
+        binary = score >= threshold
+        truth_binary = truth > 0.0
+        metrics = segmentation_metrics(score, truth, threshold=threshold)
+        payload: dict[str, Any] = {
+            "image_path": str(item.get("image_path", "")),
+            "mask_path": str(item.get("mask_path", "")),
+            "category": str(item.get("category", "")),
+            "defect_type": str(item.get("defect_type", "")),
+            "morphology": str(item.get("morphology", "unknown")),
+            "source": str(item.get("source", "")),
+            "is_anomaly": int(bool(truth_binary.any())),
+            "image_score": float(score.max()),
+            "predicted_positive_rate": float(binary.mean()),
+            "truth_positive_rate": float(truth_binary.mean()),
+            "threshold": float(threshold),
+        }
+        for key, value in metrics.items():
+            numeric = float(value)
+            payload[key] = numeric if math.isfinite(numeric) else None
+        rows.append(json.dumps(payload, sort_keys=True))
+    path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    return path
 
 
 def _write_prediction_examples(
@@ -4069,6 +4298,78 @@ def _seed_everything(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def _configure_phase5_determinism(phase5: dict[str, Any]) -> DeterminismContract:
+    enabled = bool(phase5.get("deterministic_training", False))
+    if enabled:
+        workspace = str(phase5.get("deterministic_cublas_workspace_config", ":4096:8"))
+        if workspace not in {":4096:8", ":16:8"}:
+            raise ValueError(
+                "phase5.deterministic_cublas_workspace_config must be ':4096:8' or ':16:8'"
+            )
+        os.environ["CUBLAS_WORKSPACE_CONFIG"] = workspace
+        torch.use_deterministic_algorithms(True, warn_only=False)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.backends.cuda.matmul.allow_tf32 = False
+        torch.backends.cudnn.allow_tf32 = False
+    else:
+        if _DEFAULT_CUBLAS_WORKSPACE_CONFIG is None:
+            os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
+            workspace = ""
+        else:
+            os.environ["CUBLAS_WORKSPACE_CONFIG"] = _DEFAULT_CUBLAS_WORKSPACE_CONFIG
+            workspace = _DEFAULT_CUBLAS_WORKSPACE_CONFIG
+        torch.use_deterministic_algorithms(_DEFAULT_DETERMINISTIC_ALGORITHMS)
+        torch.backends.cudnn.deterministic = _DEFAULT_CUDNN_DETERMINISTIC
+        torch.backends.cudnn.benchmark = _DEFAULT_CUDNN_BENCHMARK
+        torch.backends.cuda.matmul.allow_tf32 = _DEFAULT_CUDA_MATMUL_ALLOW_TF32
+        torch.backends.cudnn.allow_tf32 = _DEFAULT_CUDNN_ALLOW_TF32
+    return DeterminismContract(
+        enabled=enabled,
+        deterministic_algorithms=bool(torch.are_deterministic_algorithms_enabled()),
+        cudnn_deterministic=bool(torch.backends.cudnn.deterministic),
+        cudnn_benchmark=bool(torch.backends.cudnn.benchmark),
+        cublas_workspace_config=workspace,
+        cuda_matmul_allow_tf32=bool(torch.backends.cuda.matmul.allow_tf32),
+        cudnn_allow_tf32=bool(torch.backends.cudnn.allow_tf32),
+    )
+
+
+def _training_schedule_fingerprint(samples: list[SegmentationSample]) -> str:
+    payload = [
+        {
+            "image_path": sample.image_path,
+            "mask_path": sample.mask_path,
+            "source": sample.source,
+            "mask_mode": sample.mask_mode,
+            "uncertainty_mask_path": sample.uncertainty_mask_path,
+            "positive_core_path": sample.positive_core_path,
+            "possible_region_path": sample.possible_region_path,
+        }
+        for sample in samples
+    ]
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _phase5_training_seed(phase5: dict[str, Any], run_seed: int, legacy_offset: int) -> int:
+    if bool(phase5.get("paired_initialization", False)):
+        return int(run_seed)
+    return int(run_seed) + int(legacy_offset)
+
+
+def _stable_seed_offset(value: str) -> int:
+    return int.from_bytes(hashlib.sha256(value.encode("utf-8")).digest()[:4], "big")
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _count_by_category(samples: list[SegmentationSample]) -> dict[str, int]:

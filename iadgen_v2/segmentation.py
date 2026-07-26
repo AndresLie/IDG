@@ -16,14 +16,17 @@ def segmentation_metrics(prediction: np.ndarray, truth: np.ndarray, threshold: f
     positive = int(labels.sum())
     union = int(np.logical_or(binary, labels).sum())
     return {
-        "pixel_auroc": _auroc(scores, labels),
+        "pixel_auroc": binary_auroc(scores, labels),
+        "pixel_ap": average_precision(scores, labels),
         "aupro": _aupro(score_map, truth_map),
         "iou": intersection / union if union else math.nan,
         "dice": (2 * intersection) / (predicted + positive) if predicted + positive else math.nan,
     }
 
 
-def _auroc(scores: np.ndarray, labels: np.ndarray) -> float:
+def binary_auroc(scores: np.ndarray, labels: np.ndarray) -> float:
+    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+    labels = (np.asarray(labels).reshape(-1) > 0).astype(np.uint8)
     positives = int(labels.sum())
     negatives = int((labels == 0).sum())
     if positives == 0 or negatives == 0:
@@ -40,6 +43,20 @@ def _auroc(scores: np.ndarray, labels: np.ndarray) -> float:
         start = end
     positive_rank_sum = float(ranks[labels[order] == 1].sum())
     return (positive_rank_sum - positives * (positives + 1) / 2) / (positives * negatives)
+
+
+def average_precision(scores: np.ndarray, labels: np.ndarray) -> float:
+    scores = np.asarray(scores, dtype=np.float64).reshape(-1)
+    labels = (np.asarray(labels).reshape(-1) > 0).astype(np.uint8)
+    positives = int(labels.sum())
+    if positives == 0:
+        return math.nan
+    order = np.argsort(-scores, kind="mergesort")
+    sorted_labels = labels[order]
+    true_positives = np.cumsum(sorted_labels, dtype=np.float64)
+    ranks = np.arange(1, len(sorted_labels) + 1, dtype=np.float64)
+    precision = true_positives / ranks
+    return float(precision[sorted_labels == 1].sum() / positives)
 
 
 def _aupro(scores: np.ndarray, truth: np.ndarray, max_fpr: float = 0.3) -> float:

@@ -62,6 +62,7 @@ def test_segmentation_metric_loop_reports_required_metrics() -> None:
     prediction = truth.astype(np.float32)
     result = segmentation_metrics(prediction, truth)
     assert result["pixel_auroc"] == 1.0
+    assert result["pixel_ap"] == 1.0
     assert result["iou"] == 1.0
     assert result["dice"] == 1.0
     assert result["aupro"] > 0.99

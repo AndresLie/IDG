@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from iadgen_v2.phase5 import (
     SegmentationSample,
     _calibrate_fused_score_rows,
     _clean_inpaint_negative_samples,
+    _configure_phase5_determinism,
     _outside_possible_region_loss,
     _fuse_score_rows,
     _phase5_evaluators,
@@ -238,6 +240,91 @@ def test_phase5_teacher_refined_resnet18_unet_smoke(tmp_path: Path) -> None:
     assert all(float(row["teacher_refined_weight_mean"]) > 0.0 for row in rows)
     assert all(row["note"] == "resnet18_unet_teacher_refined_by_patchcore_lite" for row in rows)
     assert all(Path(row["prediction_contact_sheet"]).exists() for row in rows)
+
+
+def test_phase5_supervised_resnet18_uses_paired_seed_and_matched_steps(tmp_path: Path) -> None:
+    config = _fixture_config(tmp_path)
+    config.data["phase5"]["evaluators"] = ["supervised_resnet18_unet"]
+    config.data["phase5"]["image_size"] = 64
+    config.data["phase5"]["optimizer_steps"] = 2
+    config.data["phase5"]["paired_initialization"] = True
+    config.data["phase5"]["deterministic_training"] = True
+    config.data["phase5"]["normal_evaluation_holdout_per_category"] = 1
+    config.data["phase5"]["repeated_seeds"] = [17]
+    config.data["phase5"]["pretrained_student"] = {
+        "architecture": "resnet18_unet",
+        "weights": "none",
+        "decoder_channels": 16,
+    }
+    for category in TARGETS:
+        clean_dir = config.dataset_root / category / "train" / "good"
+        Image.open(clean_dir / "000.png").save(clean_dir / "001.png")
+    _prepare_all_artifacts(config)
+
+    try:
+        csv_path = run_phase5_evaluation(config, "heuristic")
+        first_csv = csv_path.read_bytes()
+        second_csv = run_phase5_evaluation(config, "heuristic").read_bytes()
+    finally:
+        _configure_phase5_determinism({})
+
+    with csv_path.open(newline="", encoding="utf-8") as handle:
+        rows = list(csv.DictReader(handle))
+    assert second_csv == first_csv
+    assert len(rows) == 2
+    assert {row["evaluator"] for row in rows} == {"supervised_resnet18_unet"}
+    assert [row["variant"] for row in rows] == ["real_only", "heuristic"]
+    assert {int(row["training_seed"]) for row in rows} == {17}
+    assert {int(row["optimizer_steps"]) for row in rows} == {2}
+    assert all(len(row["training_schedule_fingerprint"]) == 64 for row in rows)
+    assert {row["deterministic_training"] for row in rows} == {"1"}
+    assert {row["deterministic_algorithms"] for row in rows} == {"1"}
+    assert {row["cudnn_deterministic"] for row in rows} == {"1"}
+    assert {row["cudnn_benchmark"] for row in rows} == {"0"}
+    assert {row["cublas_workspace_config"] for row in rows} == {":4096:8"}
+    assert {row["cuda_matmul_allow_tf32"] for row in rows} == {"0"}
+    assert {row["cudnn_allow_tf32"] for row in rows} == {"0"}
+    assert {row["student_architecture"] for row in rows} == {"resnet18_unet"}
+    assert all(row["note"] == "supervised_resnet18_unet_no_teacher_no_score_fusion" for row in rows)
+    assert all(Path(row["per_image_metrics_path"]).exists() for row in rows)
+    assert all(row["image_auroc"] not in {"", "nan"} for row in rows)
+    status = json.loads((config.output_dir / "phase5" / "heuristic" / "run_status.json").read_text(encoding="utf-8"))
+    assert status["held_out_anomaly_samples"] == 6
+    assert status["held_out_normal_samples"] == 3
+    assert status["schema_version"] == 12
+    assert status["determinism"] == {
+        "cublas_workspace_config": ":4096:8",
+        "cuda_matmul_allow_tf32": False,
+        "cudnn_allow_tf32": False,
+        "cudnn_benchmark": False,
+        "cudnn_deterministic": True,
+        "deterministic_algorithms": True,
+        "enabled": True,
+    }
+
+
+def test_phase5_explicit_synthetic_metadata_requires_matching_hash(tmp_path: Path) -> None:
+    config = _fixture_config(tmp_path)
+    _prepare_all_artifacts(config)
+    metadata_path = config.output_dir / "phase4" / "heuristic" / "metadata.jsonl"
+    config.data["phase5"]["synthetic_metadata_path"] = str(metadata_path)
+    config.data["phase5"]["synthetic_metadata_sha256"] = hashlib.sha256(metadata_path.read_bytes()).hexdigest()
+
+    run_phase5_evaluation(config, "heuristic")
+
+    config.data["phase5"]["synthetic_metadata_sha256"] = "0" * 64
+    with pytest.raises(ValueError, match="hash mismatch"):
+        run_phase5_evaluation(config, "heuristic")
+
+
+def test_phase5_rejects_invalid_deterministic_cublas_workspace() -> None:
+    with pytest.raises(ValueError, match="deterministic_cublas_workspace_config"):
+        _configure_phase5_determinism(
+            {
+                "deterministic_training": True,
+                "deterministic_cublas_workspace_config": "invalid",
+            }
+        )
 
 
 def test_phase5_patchcore_guided_teacher_refined_resnet18_unet_smoke(tmp_path: Path) -> None:
@@ -522,6 +609,9 @@ def test_phase5_evaluator_alias_and_unknown_rejection() -> None:
     ]
     assert _phase5_evaluators({"evaluators": ["resnet18_unet", "patchcore_refined_resnet18_unet"]}) == [
         "teacher_refined_resnet18_unet"
+    ]
+    assert _phase5_evaluators({"evaluators": ["supervised_resnet18_unet"]}) == [
+        "supervised_resnet18_unet"
     ]
     assert _phase5_evaluators({"evaluators": ["teacher_refined_resnet18_patchcore", "patchcore_guided_resnet18_unet"]}) == [
         "patchcore_guided_teacher_refined_resnet18_unet"
