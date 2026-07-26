@@ -1,7 +1,8 @@
 # IADGen v2 — Current Weaknesses and Improvement Plan (Merged)
 
-**Assessment date:** 2026-07-24
-**Reviewed branch:** `paired-edge-selector` at `ecf1a3f`
+**Assessment date:** 2026-07-26
+**Reviewed branch:** `paired-edge-selector` through `8b26b98`, including the
+committed R4 visibility, R5 utility, R6 evidence, and VisA retention work
 **Scope:** the full picture — auto-mask/selector path, runtime caching, *and* the
 generation → downstream half. This document merges two reviews:
 
@@ -14,6 +15,349 @@ generation → downstream half. This document merges two reviews:
 Measured claims are tied to artifacts where available; §3.5 records the exact
 lineage and identifies interactive checks that still need durable logs. Deltas on
 the tiny development cohorts are diagnostic, not confirmatory.
+
+## 1c. R4 visibility-controller re-audit (2026-07-24)
+
+The previously blocked SD1.5 audit is now executable from a pinned offline fp16
+snapshot:
+
+```text
+stable-diffusion-v1-5/stable-diffusion-inpainting
+revision 8a4288a76071f7280aedbdb3253bdb9e9d5d84bb
+snapshot inventory f1196169cd575ffdf23309264dd39ad7391633a817f94fcaa9331b72b0fa4db7
+```
+
+A matched 18-sample pilot compared one-attempt generation against a
+morphology-banded controller with up to three attempts. Inputs, masks, prompts,
+profiles, and base seeds were identical.
+
+| R4 metric | Paired delta | Morphology-stratified 95% CI |
+| --- | ---: | ---: |
+| Critic visibility | `+0.0117` | `[+0.0018, +0.0220]` |
+| Adaptive mask coverage | `+0.0665` | `[+0.0281, +0.1142]` |
+| Texture preservation | `-0.0000` | `[-0.0024, +0.0026]` |
+| Leakage score | `-0.0204` | `[-0.0262, -0.0149]` |
+| Critic score | `+0.0039` | `[-0.0011, +0.0100]` |
+| Latency | `+1.9478 s/sample` | `[+1.8008, +2.1165]` |
+
+Acceptance moved only from `10/18` to `11/18`, while attempts increased from
+`18` to `45`. The controller helped metal-nut visibility, regressed tile
+visibility/leakage, and left wood at `0/6` accepted. The automated keep gate
+therefore **failed**: visibility did not reach the required `+0.020`, and
+leakage regressed by more than `0.01`.
+
+The result is a useful negative finding. Global strength/guidance escalation is
+not the correct remedy for under-edited wood masks. The next bounded R4
+experiment should use mask-local high-resolution generation or latent
+reinjection, with the same leakage constraint; do not proceed to R5 on this
+corpus.
+
+That mask-local crop experiment was then executed as a strict one-attempt
+ablation. It also failed:
+
+| Mask-local metric | Paired delta | Morphology-stratified 95% CI |
+| --- | ---: | ---: |
+| Critic visibility | `-0.0510` | `[-0.0642, -0.0385]` |
+| Adaptive mask coverage | `-0.2065` | `[-0.2786, -0.1400]` |
+| Texture preservation | `+0.1040` | `[+0.1014, +0.1066]` |
+| Leakage score | `+0.0234` | `[+0.0178, +0.0288]` |
+
+Strict soft-envelope compositing solved leakage by attenuating the desired edit
+too. Acceptance fell `10/18→6/18`, and wood remained `0/6`. Keep
+`masked_crop_generation` default-off.
+
+Two existing conditioning families were then tested:
+
+- `fixed_mask_adapter` was positive but negligible: visibility `+0.0020`,
+  coverage `+0.0063`, acceptance `10/18→12/18`, and wood remained `0/6`.
+  The trained adapter gate is only `0.1185`.
+- `clone_harmonized` failed as a global replacement but exposed a useful
+  interaction. It regressed metal nut and tile, while wood improved visibility
+  `+0.0868`, coverage `+0.3899`, and acceptance `0/6→4/6`.
+
+A category-agnostic critic arbitration over text-only and clone-harmonized
+outputs therefore selected text-only for all 12 metal/tile cases and clone for
+all 6 wood cases. It is the first R4 candidate to pass every automated gate:
+
+| Arbitrated metric | Paired delta | Morphology-stratified 95% CI |
+| --- | ---: | ---: |
+| Critic visibility | `+0.0289` | `[+0.0110, +0.0487]` |
+| Adaptive mask coverage | `+0.1300` | `[+0.0510, +0.2126]` |
+| Texture preservation | `+0.0005` | `[-0.0002, +0.0016]` |
+| Leakage score | `-0.0022` | `[-0.0043, -0.0004]` |
+
+Acceptance is `14/18` from 36 generated candidates and total latency rises
+`+0.9618 s/sample`. This is **promising diagnostic routing evidence, not an
+independent validation**: the same critic selects and scores the output. R4
+remains open until two blind reviewers agree and a held-out utility test
+confirms the selected corpus.
+
+The current candidate was rerun from the same frozen inputs on 2026-07-24.
+All 18 text-only images, all 18 clone-harmonized images, and all 18 arbitrated
+outputs were byte-identical to the checkpoint. Every critic metric, acceptance
+decision, and arbitration decision reproduced exactly; the routing remained
+`12` text-only and `6` clone-harmonized. The automated gate therefore passes
+again with identical quality deltas. Only wall-clock timing moved:
+two-arm compute changed from `2.5911` to `2.5307 s/sample`, while peak CUDA
+memory was unchanged. This validates deterministic replay, not independent
+quality, so the blind and downstream gates remain open.
+
+Artifacts:
+
+```text
+reports/r4_visibility_reaudit/comparison/r4_visibility_reaudit.md
+reports/r4_visibility_reaudit/comparison/r4_visibility_comparison.png
+reports/r4_visibility_reaudit/comparison/r4_visibility_blind_audit.png
+reports/r4_visibility_reaudit/comparison/paired_metrics.csv
+reports/r4_visibility_reaudit/mask_local_comparison/r4_visibility_reaudit.md
+reports/r4_visibility_reaudit/mask_local_comparison/r4_visibility_comparison.png
+reports/r4_visibility_reaudit/fixed_adapter_comparison/r4_visibility_reaudit.md
+reports/r4_visibility_reaudit/clone_harmonized_comparison/r4_visibility_reaudit.md
+reports/r4_visibility_reaudit/arbitrated_comparison/r4_visibility_reaudit.md
+reports/r4_visibility_reaudit/arbitrated_comparison/r4_visibility_blind_audit.png
+reports/r4_visibility_reaudit/rerun_comparison_20260724/r4_current_vs_previous.md
+```
+
+## 1d. R5 independent synthetic-utility ablation (2026-07-26)
+
+R5 is now complete as a bounded development experiment. The run used an
+independent, fusion-free ResNet18 U-Net student and compared real-only training
+against the same real data plus the 14 R4 critic-accepted synthetic samples at
+ratio `0.25`.
+
+The fairness contract passed:
+
+- the two arms used paired initialization seeds;
+- both arms performed exactly `120` optimizer steps;
+- architecture and held-out anomaly/normal sets were identical;
+- no PatchCore label refinement, teacher loss, or score fusion was active;
+- five seeds were evaluated over `metal_nut`, `tile`, and `wood`.
+
+The primary endpoint and gate were frozen before execution. The primary metric
+was category-macro pixel AP with a seed/category/image hierarchical bootstrap.
+The preregistered promotion gate required a mean gain of at least `0.02` and a
+95% interval whose lower bound exceeded zero.
+
+| R5 metric | Paired delta | Hierarchical 95% CI |
+| --- | ---: | ---: |
+| Pixel AP | `-0.0200` | `[-0.0591, +0.0171]` |
+| AUPRO | `-0.0676` | `[-0.1493, +0.0027]` |
+| Pixel AUROC | `-0.0426` | `[-0.1133, +0.0041]` |
+| Dice | `+0.0060` | `[-0.0069, +0.0212]` |
+| Image AUROC | `+0.0420` | `[-0.0826, +0.1627]` |
+| Predicted-positive rate | `+0.0118` | `[-0.0472, +0.0880]` |
+
+The joint gate **fails**. Synthetic augmentation does not improve the primary
+ranking metric, and every interval includes zero. The small Dice increase is
+not confirmatory: it occurs alongside a higher predicted-positive rate and
+lower pixel AP/AUPRO, while prediction sheets still show broad texture and
+border responses rather than consistently tighter defect localization.
+
+An immediate rerun from identical code, config, data, model, split, and
+synthetic-metadata fingerprints reproduced the failed decision but not the exact
+metrics:
+
+| R5 rerun metric | Previous delta | Current delta | Current 95% CI |
+| --- | ---: | ---: | ---: |
+| Pixel AP | `-0.0200` | `-0.0066` | `[-0.0573, +0.0380]` |
+| AUPRO | `-0.0676` | `-0.0322` | `[-0.1275, +0.0602]` |
+| Pixel AUROC | `-0.0426` | `-0.0167` | `[-0.0634, +0.0288]` |
+| Dice | `+0.0060` | `+0.0002` | `[-0.0158, +0.0179]` |
+
+Every first training loss was identical, while later losses and thresholds
+drifted. This localizes the remaining reproducibility weakness to the neural
+training trajectory, most likely nondeterministic CUDA operations: the seed
+helper seeds all random-number generators but does not enforce deterministic
+Torch/cuDNN algorithms. The exact R5 effect size is therefore not ready for a
+single-number claim. The decision is stable across both executions: the primary
+effect is negative, every interval includes zero, and the promotion gate fails.
+
+That correctness gap is now fixed behind an opt-in Phase 5 contract. Strict
+mode enables deterministic Torch algorithms, deterministic cuDNN, the
+`:4096:8` cuBLAS workspace, disables cuDNN benchmarking and TF32, and records
+all settings plus a content hash of each realized training schedule.
+
+Two fresh CUDA executions of the bounded replay config passed every predeclared
+identity check:
+
+```text
+15/15 report artifacts byte-identical
+segmentation CSV byte-identical
+per-image metrics byte-identical
+prediction contact sheets byte-identical
+run status byte-identical
+```
+
+This proves the new deterministic mechanism on a one-seed, 12-step replay. It
+does not make synthesis effective. The full deterministic five-seed R5
+re-estimation was subsequently frozen and executed under a new architecture
+tag:
+
+| Deterministic R5 metric | Paired delta | Hierarchical 95% CI |
+| --- | ---: | ---: |
+| Pixel AP | `-0.0015` | `[-0.0414, +0.0403]` |
+| AUPRO | `-0.0436` | `[-0.1504, +0.0594]` |
+| Pixel AUROC | `-0.0302` | `[-0.1326, +0.0636]` |
+| Dice | `+0.0011` | `[-0.0098, +0.0137]` |
+| Image AUROC | `-0.0393` | `[-0.1435, +0.0723]` |
+
+The deterministic fairness contract passes, but the utility gate fails again.
+The preferred exact estimate is now effectively zero, with an interval spanning
+meaningful harm and benefit. This strengthens the null conclusion: execution
+drift is fixed, yet there is still no evidence that the selected synthetic
+corpus improves independent segmentation.
+
+This result closes the immediate Track-B question without hiding a negative
+outcome:
+
+```text
+the R4-selected synthetic corpus is not independently useful under the
+preregistered R5 regime; synthesis remains optional and cannot support a
+"synthetic data improves detection" claim.
+```
+
+The locked R5 evaluation is not justified because the development promotion
+gate failed. Do not tune ratios, thresholds, or generator parameters against
+this completed cohort. R4 blind review remains useful for assessing perceptual
+critic validity, but even a passing human review would not reverse the
+downstream null measured here.
+
+Artifacts:
+
+```text
+reports/r5_independent_synthetic_utility/preregistration.md
+reports/r5_independent_synthetic_utility/phase5/qwen/summary.md
+reports/r5_independent_synthetic_utility/phase5/qwen/segmentation_results.csv
+reports/r5_independent_synthetic_utility/phase5/qwen/synthetic_selector_report.md
+reports/r5_independent_synthetic_utility/utility_review/r5_synthetic_utility_review.md
+reports/r5_independent_synthetic_utility/utility_review/r5_synthetic_utility_review.json
+reports/r5_independent_synthetic_utility/rerun_comparison_20260726/r5_current_vs_previous.md
+reports/r5_deterministic_replay/replay_contract.md
+reports/r5_deterministic_replay/replay_result.md
+reports/r5_independent_synthetic_utility_deterministic/preregistration.md
+reports/r5_independent_synthetic_utility_deterministic/comparison/r5_deterministic_vs_historical.md
+```
+
+## 1e. R6 evidence package and external-baseline readiness (2026-07-26)
+
+R6 now consolidates the sealed R1-R5 evidence through one governed,
+hash-verifying command:
+
+```bash
+python -m iadgen_v2.cli r6-evidence-package \
+  --config configs/r6_evidence_package.yaml
+```
+
+All six configured source artifacts passed their pinned SHA-256 checks. The
+package is deterministic, and its 13 generated evidence artifacts pass their
+own `artifact_hashes.sha256` verification.
+
+The claim ledger reaches a deliberately bounded conclusion:
+
+| Claim | Status | Strongest evidence |
+| --- | --- | --- |
+| Real-candidate selector calibration improves development regret | supported | `+0.1943 [0.1005,0.3007]` reduction on the widened LCO pool |
+| Selector gain transfers to ten locked MVTec categories | supported | macro Dice `+0.0952 [0.0450,0.1440]` |
+| Candidate generation contains better masks than selection publishes | supported diagnostic | locked oracle-selected gap `0.2455` Dice |
+| Generic auto-mask system is release-ready | rejected | locked macro Dice `0.3171`; search recall `0.7162` |
+| Critic arbitration improves perceptual generation | provisional | automated visibility `+0.0289 [0.0110,0.0487]`; human review pending |
+| Synthetic augmentation improves independent segmentation | rejected | deterministic pixel AP `-0.0015 [-0.0414,+0.0403]` |
+| External-dataset generalization / state of the art | not tested | VisA runtime ready; full external inference/evaluation pending |
+
+R6 also makes the failure structure explicit:
+
+- locked category-macro precision is only `0.2889` against recall `0.7357`, so
+  over-segmentation remains the dominant published-mask error;
+- oracle Dice is `0.5615` against selected Dice `0.3161`, so candidate ranking
+  leaves `0.2455` Dice unavailable at runtime;
+- `74/839` locked images have zero Dice;
+- cable is localization-limited (`0.4443` search recall);
+- leather, screw, and toothbrush are dominated by excess predicted area;
+- screw, toothbrush, and hazelnut retain large selector regret.
+
+The risk-coverage comparison adds a separate calibration warning. At 25%
+coverage, development mean regret is `0.0720` on the non-widened pool and
+`0.0999` on the widened pool, but locked mean regret is `0.2363`. Confidence
+therefore does not transfer well enough for abstention to turn the current
+system into a reliable high-confidence product mode.
+
+External reproduction is now partially unblocked:
+
+- official SubspaceAD code and protocol were identified, but the local
+  environment lacks `anomalib` and the required
+  `facebook/dinov2-with-registers-giant` cache;
+- the official VisA archive and one-class split are now content-hash verified;
+  all `10,821` runtime images are isolated from `1,200` evaluation-only masks;
+- the exact frozen `v3-generic-evidence-rc1` commit completed a 12-category,
+  one-anomaly-per-category smoke run without opening those masks;
+- the smoke run produced all 12 metadata rows with no execution errors, but
+  `9/12` were `soft_mask_only` and `3/12` were `needs_review`; this proves
+  compatibility, not external mask quality;
+- projected full VisA inference is roughly 11-12 hours at the observed smoke
+  rate, followed by the one-shot locked evaluation;
+- an immediate warm-cache rerun reproduced all selected modes and every
+  published mask variant exactly; elapsed time fell from `413.181 s` to
+  `168.198 s`, but raw metadata exposed a cache-provenance schema mismatch;
+- the current implementation now versions evidence caches and persists complete
+  producer metadata for functional texture, DINO memory, and registered
+  residual providers. Cold/warm regression tests verify identical evidence
+  values, calibration, reliability, and metadata keys; only `cache_hit`
+  changes. The frozen VisA commit remains untouched because this is a
+  non-scoring provenance correction;
+- a current-code integration rerun confirms the fix on VisA candle: cold and
+  warm metadata are identical after excluding only run identity, timing, and
+  cache state; all mask pixels match, and the current output also matches the
+  frozen candle output exactly. Warm evidence reuse reduces elapsed time
+  `19.351 s -> 17.152 s` without changing the decision;
+- a bounded locked-evaluation retention profile now removes only disposable
+  visual diagnostics. On the 12-category VisA smoke cohort, selected modes,
+  selection decisions, fused score maps, and all 10 mask roles remain
+  byte-identical to the previous full-retention run. Per-run artifacts fall
+  `86.59 MiB -> 34.57 MiB` (`-60.1%`), with candidate/provider PNG paths
+  explicitly empty rather than dangling. Contact sheets are now category-
+  balanced and capped at 64 rows by default, or can be disabled entirely;
+- this operational patch changes the package content hash even though it does
+  not change inference. It therefore cannot silently replace the exact frozen
+  RC. Before a locked run uses it, the behavior-equivalent implementation must
+  be re-sealed as a new RC, or the original frozen worktree must be run with
+  additional storage;
+- a one-shot cache policy now resolves that remaining storage bottleneck.
+  Target DINO/texture evidence is memory-only while the expensive shared DINO
+  normal tokens and normal-only calibration remain persistent. The repeated
+  12-category run writes `0` target `.npz` files, retains all `72` normal-token
+  files, and again has zero differences in selected modes, decisions, fused
+  maps, or the 120 mask-role files. The full projection falls from roughly
+  `12 GiB` to `3.6 GiB`;
+- the read-only NumPy warning exposed by the real run is fixed at both DINO and
+  SAM image boundaries by materializing writable RGB arrays. A subsequent
+  real candle integration run completed warning-free. A full 12-category
+  warning-free rerun then reproduced all regions, candidate scores,
+  measurements, calibrated predictions, fused maps, and 120 mask roles exactly;
+  elapsed time improved `164.761 s -> 156.508 s`;
+- MVTec AD 2 is not present locally and requires its official access path.
+
+This does not reopen mask or generation tuning. The next R6 work is the full
+VisA inference/evaluation after resolving the frozen-RC/storage gate, then
+dependency acquisition for the remaining external reproductions.
+
+Artifacts:
+
+```text
+reports/r6_evidence_package/preregistration.md
+reports/r6_evidence_package/r6_evidence_package.json
+reports/r6_evidence_package/evidence_index.json
+reports/r6_evidence_package/claim_ledger.md
+reports/r6_evidence_package/headline_results.md
+reports/r6_evidence_package/locked_failure_sheet.md
+reports/r6_evidence_package/risk_coverage.md
+reports/r6_evidence_package/external_baseline_status.md
+reports/r6_evidence_package/paper_package.md
+reports/r6_evidence_package/artifact_hashes.sha256
+reports/v3_generic_evidence_visa_smoke/visa_smoke_review.md
+reports/v3_generic_evidence_visa_smoke/rerun_comparison_20260726/visa_current_vs_previous.md
+reports/v3_generic_evidence_visa_cache_provenance_smoke/rerun_comparison_20260726/current_vs_previous.md
+reports/v3_generic_evidence_visa_retention_smoke/retention_review.md
+```
 
 ---
 
@@ -530,11 +874,11 @@ post-confirmation ablations, not automatic implementation tasks.
 | --- | --- | --- | --- | --- |
 | **R0** | Validated checkpoint + PCA closure + correctness | ✅ Done (`e34a433`) | `99b7000` sealed checkpoint; `a7171af` default-off PCA. `e34a433` makes visibility contrast change-based, sets PCA `augmentation_consistency=None`, adds acceptance tests. PCA stays off by default. | Closed: PCA result, runtime limitation and change-based visibility contract are durable. |
 | **R1** | Selector contribution evidence pack | ✅ Done (`755e14a`, `5b1850c`) | `scripts/build_selector_evidence_pack.py` (reporting only; deployed selector untouched). Hash-verified identical pools; synthetic vs real-LCO on non-widened (delta +0.0911 [0.0277,0.1757]) and widened (+0.1943 [0.1005,0.3007], all 5 categories exclude zero); selected Dice, per-category/per-morphology hierarchical intervals, calibration-size + reliability + risk-coverage curves. | Primary selector claim supported: hierarchical paired intervals show lower regret and higher selected Dice on both pools. |
-| **R2** | Locked data + runtime environment unlock | 🟡 MVTec unlocked (`a614061`, `ecf1a3f`) | Ten locked MVTec categories acquired and hash-inventoried; runtime/reference isolation verified. External dataset and pinned SD1.5 cache remain open. | Locked MVTec slice complete without post-access behavior changes. |
+| **R2** | Locked data + runtime environment unlock | 🟡 MVTec + SD1.5 unlocked | Ten locked MVTec categories acquired and hash-inventoried; runtime/reference isolation verified. Pinned SD1.5 fp16 cache is now local and recorded in Phase 4 manifests. External dataset remains open. | Locked MVTec and generation-runtime slices complete without post-access mask behavior changes. |
 | **R3** | Locked-category mask confirmation | ✅ Primary confirmation complete | 839 images, 29,584 candidates. Locked macro Dice `0.3171`; oracle `0.5615`. Real-widened selector beats synthetic selector `+0.0952`, CI `[+0.0450,+0.1440]`; full release targets fail. | Selector contribution confirmed; architecture release rejected. No tuning on exposed categories. |
-| **R4** | Visibility critic validity + generation re-audit | ⬜ Blocked by R2 | First repair/test the critic contract on structured unchanged backgrounds; then run baseline vs visibility controller with blind human review. | Keep the controller only if metric change, human judgment, leakage and texture preservation agree. |
-| **R5** | Independent synthetic-utility ablation | ⬜ After R4 | Same student ±synthetic, PatchCore fusion removed, matched steps, five seeds, fixed ratios, hierarchical bootstrap; include strong normal-only references. | Promote synthesis only if a preregistered regime has a positive interval. Otherwise report the null and make synthesis secondary. |
-| **R6** | External baselines + paper package | ⬜ After R3/R5 | VisA/MVTec AD 2, official SubspaceAD reproduction, calibration-size curves, risk-coverage plots, manifests and failure sheets. | Claims must match the strongest completed evidence tier. |
+| **R4** | Visibility critic validity + generation re-audit | 🟡 Automated gate passed; independent gate pending | Global retry and mask-local crop rejected. Fixed adapter negligible. Text/clone critic arbitration: visibility `+0.0289 [0.0110,0.0487]`, coverage `+0.1300`, leakage `-0.0022`, acceptance `10/18→14/18`. | Keep rejected mechanisms default-off. Do not promote arbitration until two blind reviewers and independent downstream evaluation agree. |
+| **R5** | Independent synthetic-utility ablation | ✅ Complete; promotion gate failed | Fusion-free ResNet18 U-Net, paired seeds, 120 matched steps, five seeds, fixed ratio, and hierarchical bootstrap. Historical pixel AP was `-0.0200` then `-0.0066`; strict deterministic replay reproduces `15/15` artifacts, and the full deterministic estimate is `-0.0015 [-0.0414,+0.0403]`. | Null confirmed under deterministic execution. Do not promote the synthetic corpus or run locked R5. |
+| **R6** | External baselines + paper package | 🟡 VisA runtime ready; quantitative external run pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. Official VisA data is hash-pinned and mask-isolated; the exact frozen RC completed a 12-category smoke run. SubspaceAD and MVTec AD 2 remain blocked. | Run full frozen VisA inference and one-shot locked evaluation without reopening tuning. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly
 
@@ -601,20 +945,34 @@ baseline, with failure categories disclosed.
 
 ### 5.7 Sprint R4 — validate the critic before spending SD compute
 
-The current visibility score still includes absolute contrast between the
-generated mask region and its surrounding ring. On a structured but unchanged
-object this can be high even when generated and background images are identical.
-Before the SD1.5 re-audit:
+The metric-contract work is complete:
 
-- define visibility entirely from **generated-minus-background change** inside
-  the mask, added/removed gradient energy, and change relative to a ring;
-- add an identity test on a high-contrast structured background that must score
-  near zero;
-- use morphology-specific lower **and upper** visibility/fidelity bands so a
-  destructive edit cannot win merely by being stronger;
-- validate critic–human alignment on a stratified sample and report rank
-  correlation plus disagreement cases;
-- run a blinded two-reviewer study alongside automated metrics.
+- visibility is defined from **generated-minus-background change** inside the
+  mask, added/removed gradient energy, and change relative to a ring;
+- structured unchanged and ring-only identity tests score near zero;
+- morphology-specific lower, target, and upper visibility bands are supported;
+- over-visible and fidelity-regressing attempts reduce strength rather than
+  escalating it;
+- the pinned fp16/safetensors SD snapshot is load-tested offline and recorded in
+  finalized experiment manifests.
+
+The first SD1.5 pilot is also complete and fails the joint promotion gate. The
+controller's visibility delta is positive but too small, and the leakage-score
+regression is too large. The blinded two-reviewer sheet has been generated but
+has not been scored by two independent reviewers.
+
+The mask-local crop sub-sprint was run and stopped after its first matched
+cohort because visibility and coverage regressed significantly. The existing
+conditioning-family comparison is also complete: fixed adapter is negligible,
+while clone harmonization is useful only on the cases where the critic finds
+support.
+
+The next R4 sub-sprint is validation, not another generator:
+
+- collect two independent blind judgments on the arbitrated A/B sheet;
+- report inter-reviewer agreement and critic/reviewer disagreements;
+- require both reviewers to judge at least 80% of accepted samples defect-like;
+- only then integrate arbitration into Phase 4/5 and run independent utility.
 
 The keep gate is joint: visibility improves with a stratified 95% interval
 excluding zero, at least 80% of accepted samples are judged visibly
@@ -624,7 +982,7 @@ repair the metric rather than tune the generator against it.
 
 ### 5.8 Sprint R5 — make or break the synthesis claim
 
-Run the clean ablation already identified:
+The clean ablation is complete:
 
 - identical student initialization family and matched optimization steps;
 - normal-only versus normal+synthetic, with PatchCore teacher fusion disabled;
@@ -634,11 +992,61 @@ Run the clean ablation already identified:
   predicted-positive rate and per-category regressions;
 - evaluate perceptual quality separately from downstream utility.
 
-If no preregistered regime beats normal-only with a 95% interval excluding zero,
-the honest conclusion is valuable: synthesis is an optional/niche augmentation
-path, while calibrated pseudo-mask selection remains the primary contribution.
+The preregistered regime did not beat normal-only. Pixel AP moved by
+`-0.0200 [-0.0591,+0.0171]`; AUPRO and pixel AUROC were also negative, while
+the small Dice increase was uncertain. The stop rule is therefore active:
+synthesis is an optional/niche augmentation path, while calibrated pseudo-mask
+selection remains the primary contribution. The next work is R6 evidence
+packaging and external baselines, not post-hoc R5 tuning.
 
-### 5.9 Execution order and stop conditions
+The identical-input rerun also failed (`pixel AP -0.0066
+[-0.0573,+0.0380]`) but exposed non-byte-reproducible CUDA training
+trajectories. Any future Track-B neural experiment must first pass a
+deterministic replay test; this correctness work does not reopen R5 tuning.
+
+That replay gate now passes. The new deterministic Phase 5 contract reproduces
+all `15` bounded quality artifacts byte-for-byte across two command executions.
+Use `configs/r5_independent_synthetic_utility_deterministic.yaml` for any future
+full-scale re-estimation, with a new frozen preregistration and architecture
+tag. The original R5 null and stop decision remain unchanged.
+
+The full-scale deterministic re-estimation is now complete. Its primary pixel
+AP delta is `-0.0015 [-0.0414,+0.0403]`; AUPRO and pixel AUROC remain negative,
+and every interval includes zero. This replaces the drifting historical runs as
+the preferred exact estimate without changing the decision. R5 is closed.
+
+### 5.9 Sprint R6 — package the evidence before external expansion
+
+The internal evidence package is complete. It verifies the exact R1-R5 source
+hashes and emits deterministic machine-readable and paper-facing outputs:
+
+- an evidence index and output hash manifest;
+- a supported/provisional/rejected/not-tested claim ledger;
+- one headline table spanning selector calibration, locked quality, critic
+  validity, and downstream utility;
+- a ten-category locked failure sheet;
+- development and post-lock risk-coverage diagnostics;
+- an external-baseline readiness matrix.
+
+The package confirms the selector-calibration contribution and rejects both
+release-readiness and downstream synthetic-utility claims. It also shows that
+abstention confidence shifts badly: selecting the top 25% lowers development
+regret below `0.10`, but locked regret remains `0.2363`.
+
+External execution is the remaining R6 slice:
+
+1. run the full frozen VisA inference and one-shot locked evaluation using the
+   completed content-hashed runtime/reference split;
+2. obtain MVTec AD 2 through its official access process;
+3. install the official SubspaceAD environment and cache its specified
+   DINOv2-with-registers giant backbone;
+4. reproduce the official baseline without changing the frozen IADGen method;
+5. add only locally measured external rows to the claim ledger.
+
+Do not substitute the existing DINOv2-small/PCA-inspired provider for official
+SubspaceAD, and do not quote paper numbers as project measurements.
+
+### 5.10 Execution order and stop conditions
 
 1. Finish R0 documentation; do not turn it into another tuning loop.
 2. Build R1 now—it uses assets already present and packages the strongest
@@ -646,9 +1054,14 @@ path, while calibrated pseudo-mask selection remains the primary contribution.
 3. In parallel operationally, acquire/hash the locked datasets and pinned model
    caches for R2.
 4. Run R3 before enabling any new default evidence or specialist.
-5. Fix the visibility metric contract, then run R4 when SD1.5 is available.
-6. Run R5 only on a generation corpus that passes R4.
-7. Build R6 from completed evidence, including null results.
+5. Keep global retry, mask-local crop, and fixed-adapter promotion disabled;
+   complete blind review of text/clone arbitration.
+6. Preserve R5 as the preregistered development null; do not run its locked
+   extension or tune against the completed cohort.
+7. Complete the independent R4 blind review only as critic-validity evidence.
+8. Keep the completed internal R6 package sealed and include the R5 null.
+9. Acquire external prerequisites, then run official baselines and datasets
+   against the frozen method without further development-category tuning.
 
 | Observation | Required decision |
 | --- | --- |
@@ -875,44 +1288,61 @@ Cache/device contracts (A7) hardened and tested; MuSc caching (A6) remains.
 ### Track B — generation / downstream (parallel)
 
 #### 🟡 B-S1 · Visibility/fidelity critic + visibility-targeted controller  *(fixes B2; critic `c4ccc37`, controller `36a6afd`)*
-Critic + controller mechanism implemented and tested; empirical tuning (bands,
-threshold) needs an SD re-audit run.
+Critic + controller mechanism implemented and tested. The first pinned-SD
+re-audit is complete; the global controller failed its joint keep gate.
 
 **Contract**
 - [x] Add a visibility term to `iadgen_v2/generation_critic.py` (in-mask deviation magnitude, added edge/gradient energy, local contrast vs a surrounding normal ring)
 - [x] Controller drives visibility (rank tiebreak + visibility-triggered retry); coverage demoted to a guard (weight 0.22→0.12 + opt-in reject gate)
-- [ ] Freeze the exact Track-A mask manifest/hash consumed by this experiment
+- [x] Freeze/hash the exact Phase 2 parent metadata consumed by both arms
 
 **Tasks**
 - [x] Implement the visibility/fidelity metric + unit tests against known visible/invisible edits
 - [x] Validate on real corpus: genuine defect 0.6–0.79 vs current corpus median 0.25 (150 samples); gate@0.35 flags 97%
 - [x] Retarget the Phase-4 controller objective to visibility (rank + retry); per-attempt reason logging
-- [ ] Preregister morphology-specific bands from real-defect reference patches and labeled fixtures
-- [ ] SD re-audit: set `target_defect_visibility` / `min_defect_visibility_score`, regenerate, two-reviewer blind check
+- [x] Implement morphology-specific lower/target/upper bands
+- [x] Run matched SD re-audit with `target_defect_visibility` enabled
+- [x] Generate randomized blind-review sheet and separate answer key
+- [x] Run and reject the strict mask-local crop ablation (`visibility -0.0510`,
+  `coverage -0.2065`)
+- [x] Run existing conditioning-family comparison: fixed adapter negligible;
+  clone harmonization improves wood but regresses other categories
+- [x] Build category-agnostic text/clone arbitration; automated R4 gate passes
+  (`visibility +0.0289`, `leakage -0.0022`, `10/18→14/18` accepted)
+- [x] Reproduce the current arbitration run: all generated images, critic
+  metrics, acceptance outcomes, and `12/6` routing decisions are identical
+- [ ] Obtain independent judgments from two reviewers
+- [ ] Integrate arbitration into Phase 4/5 only after blind-review agreement
 
-**Status: 🚧 BLOCKED on the pinned SD1.5 cache.** The empirical re-audit needs
-SD1.5 inpainting weights available offline; `phase3-train` fails with
-`LocalEntryNotFoundError` (network disabled). Mechanism + config plumbing are in
-place and the gate defaults off, so nothing regresses. Resume when SD1.5 is
-cached: run the two configs (baseline vs `target_defect_visibility` on) through
-prepare→phase2→phase3→phase4 and compare visibility + blind review.
+**Status: automated gate passed; independent gate pending.** The fp16 SD1.5 snapshot is now
+available offline and hash-inventoried in both finalized manifests. The
+controller increased visibility by `+0.0117 [0.0018,0.0220]` and coverage by
+`+0.0665 [0.0281,0.1142]`, but leakage score regressed by
+`-0.0204 [-0.0262,-0.0149]`; acceptance improved only `10/18→11/18` at 2.5×
+attempt count. Keep that controller off. Text/clone arbitration subsequently
+passed all automated gates, but the critic is not an independent judge and the
+blind human gate remains open.
 
 **Acceptance / exit gate**
-- [ ] Mean visibility improves by `≥ 0.020` over the frozen 0.0551 baseline, with a morphology-stratified 95% bootstrap CI excluding zero
+- [x] Mean visibility improves by `≥ 0.020` over the matched one-attempt
+  baseline, with a morphology-stratified 95% bootstrap CI excluding zero
+  *(automated arbitration result; not independent validation)*
 - [ ] `≥ 80%` of the stratified accepted sample is judged visibly defect-like by both reviewers
-- [ ] Leakage and texture-preservation means each regress by no more than `0.01`
+- [x] Leakage and texture-preservation means each regress by no more than `0.01`
 
-#### ⬜ B-S2 · Preregistered downstream ablation  *(fixes B1, B3)*
+#### ✅ B-S2 · Preregistered downstream ablation  *(fixes B1, B3)*
 **Contract**
-- [ ] Same student, ±synthetic, **PatchCore fusion removed**, matched training compute, 5 seeds, hierarchical bootstrap CIs; regimes + primary metric preregistered
+- [x] Same student, ±synthetic, **PatchCore fusion removed**, matched training compute, 5 seeds, hierarchical bootstrap CIs; regimes + primary metric preregistered
 
 **Tasks**
-- [ ] Build the ablation harness (fusion-off student, matched steps)
-- [ ] Preregister regimes/metric; select regime on development
-- [ ] Run once on locked evaluation data
+- [x] Build the ablation harness (fusion-off student, matched steps)
+- [x] Preregister the development regime, primary metric, interval, and gate
+- [x] Run the development experiment once
+- [x] Stop before locked evaluation because the development promotion gate failed
 
 **Acceptance / exit gate**
-- [ ] A regime where synthetic beats normal-only with 95% CI excluding zero — or the null reported and synthesis repositioned as optional augmentation
+- [x] Null reported and synthesis repositioned as optional augmentation:
+  pixel AP `-0.0200 [-0.0591,+0.0171]`
 
 ---
 
