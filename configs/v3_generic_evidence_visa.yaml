@@ -57,7 +57,7 @@ external_benchmarks:
 
 research_governance:
   enabled: true
-  architecture_tag: v3-generic-evidence-frozen-20260723
+  architecture_tag: v3-generic-evidence-rc2-operational-20260726
   experiment_track: external-generalization-visa
   development_categories: [bottle, zipper, wood, metal_nut, tile]
   locked_categories:
@@ -75,7 +75,12 @@ research_governance:
     - pipe_fryum
   locked_official_mask_roots: [data/visa_official_reference_masks]
   locked_preregistration_path: visa_external_preregistration.yaml
-  frozen_architecture_manifest: reports/v3_generic_evidence_development/architecture_freeze/v3-generic-evidence-rc1.json
+  parent_frozen_architecture_manifest: reports/v3_generic_evidence_development/architecture_freeze/v3-generic-evidence-rc1.json
+  equivalence_baseline_metadata_path: outputs/v3_generic_evidence_visa_smoke/auto_masks/qwen/runs/20260726T083031Z-11f6833f/metadata.jsonl
+  equivalence_candidate_metadata_path: outputs/v3_generic_evidence_visa_retention_smoke/auto_masks/qwen/runs/20260726T112627Z-a5349ba3/metadata.jsonl
+  operational_equivalence_min_samples: 12
+  release_architecture_tag: v3-generic-evidence-rc2-operational-20260726
+  frozen_architecture_manifest: reports/v3_generic_evidence_visa/architecture_freeze/v3-generic-evidence-rc2-operational-20260726.json
   enforce_official_mask_isolation: true
   dataset_fingerprint_mode: sha256
 
@@ -85,6 +90,10 @@ auto_masks:
   provider: qwen
   publish_dataset_ground_truth: false
   overwrite: true
+  resume_incomplete: true
+  artifact_retention: locked_evaluation
+  write_overlays: false
+  write_contact_sheets: false
   qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
   qwen_cache_dir: model_cache/huggingface/hub
   qwen_local_files_only: true
@@ -92,6 +101,7 @@ auto_masks:
   qwen_device: auto
   qwen_dtype: auto
   qwen_prompt_style: defect_localization_json
+  qwen_localization_cache_dir: outputs/v3_generic_evidence_visa_smoke/auto_masks/qwen/localization_cache
   min_box_area_ratio: 0.001
   max_box_area_ratio: 0.60
   allow_localization_fallback: true
@@ -112,6 +122,7 @@ auto_masks:
   dinov2_device: auto
   selector_model_path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.joblib
   generic_evidence:
+    persist_target_evidence_cache: false
     edge_refine: true
     dinov2_enabled: true
     dinov2_scales: [448]

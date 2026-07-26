@@ -91,6 +91,8 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_argument("--download", action="store_true")
     sub = commands.add_parser("freeze-architecture")
     sub.add_argument("--config", required=True, type=Path)
+    sub = commands.add_parser("reseal-architecture")
+    sub.add_argument("--config", required=True, type=Path)
     sub = commands.add_parser("r6-evidence-package")
     sub.add_argument("--config", required=True, type=Path)
     args = parser.parse_args(argv)
@@ -207,6 +209,10 @@ def _execute_command(args: argparse.Namespace, config: AppConfig, manifest_path:
         from iadgen_v2.architecture_freeze import freeze_generic_architecture
 
         return "frozen architecture manifest written to", freeze_generic_architecture(config)
+    if args.command == "reseal-architecture":
+        from iadgen_v2.architecture_freeze import reseal_behavior_equivalent_architecture
+
+        return "resealed architecture manifest written to", reseal_behavior_equivalent_architecture(config)
     if args.command == "r6-evidence-package":
         return "R6 evidence package written to", build_r6_evidence_package(config)
     raise ValueError(f"Unsupported command: {args.command}")

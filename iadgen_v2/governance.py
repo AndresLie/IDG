@@ -43,6 +43,7 @@ COMMAND_POLICIES = {
     "prepare-locked-benchmark": "official-preparation",
     "prepare-visa-benchmark": "official-preparation",
     "freeze-architecture": "runtime",
+    "reseal-architecture": "runtime",
     "r6-evidence-package": "runtime",
 }
 
@@ -185,6 +186,7 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
     excluded_operational_keys = {
         "artifact_retention",
         "contact_sheet_max_rows",
+        "resume_incomplete",
         "write_overlays",
         "write_contact_sheets",
         "write_variant_overlays",
@@ -204,7 +206,7 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
                 for nested_key, nested_value in value.items()
                 if nested_key != "persist_target_evidence_cache"
             }
-        behavioral_auto[key] = value
+        behavioral_auto[str(key)] = _fingerprint_safe(value)
     checkpoint_hashes: dict[str, str | None] = {}
     for key in ("sam2_checkpoint", "sam_checkpoint"):
         value = auto.get(key)
@@ -620,6 +622,16 @@ def code_inventory(config: AppConfig) -> dict[str, Any]:
 
 def _category_set(value: object, key: str) -> set[str]:
     return set(_string_list(value, key))
+
+
+def _fingerprint_safe(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _fingerprint_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_fingerprint_safe(item) for item in value]
+    if isinstance(value, Path):
+        return str(value)
+    return value
 
 
 def _string_list(value: object, key: str) -> list[str]:

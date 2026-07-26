@@ -1,0 +1,20 @@
+{
+  "approval_scope": "locked_confirmation_only",
+  "architecture_core_fingerprint": "07535d35a3144db4cb8e93beeac309e992f8e6151847dd82b2e03469f801772f",
+  "architecture_tag": "v3-generic-evidence-frozen-20260723",
+  "development_release_gate_passed": false,
+  "development_status": {
+    "full_development_diagnostic_macro_dice": 0.4723,
+    "leave_category_out_macro_dice": 0.5088,
+    "release_thresholds_not_met": true
+  },
+  "go": true,
+  "go_meaning": "Approved only for the preregistered locked confirmation run; not approved as a release-grade architecture.",
+  "implementation_commit": "a614061",
+  "locked_preregistration_path": "locked_generalization_preregistration.yaml",
+  "locked_preregistration_sha256": "c531bb464bab9936c389ff316c90b248f7e5f0fdc84894f61bc8731d79370237",
+  "pca_subspace_enabled": false,
+  "post_freeze_category_tuning_forbidden": true,
+  "selector_sha256": "1f7fdb0c216f34f1c6b5f1561416f4dfcb5d2da00350347825190c53c5a91a68",
+  "specialists": "disabled"
+}

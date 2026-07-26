@@ -1067,6 +1067,100 @@ def test_auto_masks_interruption_preserves_stable_metadata_and_writes_partial_ru
     assert not list((config.dataset_root / "custom_part" / "ground_truth" / "scratch").glob("*_mask.png"))
 
 
+def test_auto_masks_resume_matching_interrupted_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _fixture_config(tmp_path)
+    config.data["auto_masks"]["resume_incomplete"] = True
+    config.data["auto_masks"]["qwen_localization_cache_enabled"] = False
+
+    class InterruptingExtractor(_FakeQwenExtractor):
+        calls = 0
+
+        def analyze(self, image: Image.Image, prompt: str) -> dict[str, object]:
+            type(self).calls += 1
+            if type(self).calls == 2:
+                raise KeyboardInterrupt
+            return super().analyze(image, prompt)
+
+    monkeypatch.setattr("iadgen_v2.auto_masks.qwen_availability", _ready_qwen)
+    monkeypatch.setattr("iadgen_v2.auto_masks.QwenFeatureExtractor", InterruptingExtractor)
+    with pytest.raises(KeyboardInterrupt):
+        run_auto_masks(config)
+    interrupted = json.loads(
+        (config.output_dir / "auto_masks" / "qwen" / "last_run_status.json").read_text(encoding="utf-8")
+    )
+    with Path(interrupted["partial_metadata_path"]).open("a", encoding="utf-8") as handle:
+        handle.write('{"truncated":')
+
+    class ResumingExtractor(_FakeQwenExtractor):
+        calls = 0
+
+        def analyze(self, image: Image.Image, prompt: str) -> dict[str, object]:
+            type(self).calls += 1
+            return super().analyze(image, prompt)
+
+    monkeypatch.setattr("iadgen_v2.auto_masks.QwenFeatureExtractor", ResumingExtractor)
+    metadata_path = run_auto_masks(config)
+    rows = [json.loads(line) for line in metadata_path.read_text(encoding="utf-8").splitlines()]
+    current = json.loads(
+        (config.output_dir / "auto_masks" / "qwen" / "current_run.json").read_text(encoding="utf-8")
+    )
+
+    assert len(rows) == 3
+    assert ResumingExtractor.calls == 2
+    assert current["run_id"] == interrupted["run_id"]
+    assert current["records_resumed"] == 1
+    assert current["resume_count"] == 1
+    assert not (Path(current["run_output_dir"]) / "metadata.partial.jsonl").exists()
+    assert all(Path(row["mask_path"]).is_file() for row in rows)
+
+
+def test_auto_masks_do_not_resume_after_fingerprint_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = _fixture_config(tmp_path)
+    config.data["auto_masks"]["resume_incomplete"] = True
+    config.data["auto_masks"]["qwen_localization_cache_enabled"] = False
+
+    class InterruptingExtractor(_FakeQwenExtractor):
+        calls = 0
+
+        def analyze(self, image: Image.Image, prompt: str) -> dict[str, object]:
+            type(self).calls += 1
+            if type(self).calls == 2:
+                raise KeyboardInterrupt
+            return super().analyze(image, prompt)
+
+    monkeypatch.setattr("iadgen_v2.auto_masks.qwen_availability", _ready_qwen)
+    monkeypatch.setattr("iadgen_v2.auto_masks.QwenFeatureExtractor", InterruptingExtractor)
+    with pytest.raises(KeyboardInterrupt):
+        run_auto_masks(config)
+    interrupted = json.loads(
+        (config.output_dir / "auto_masks" / "qwen" / "last_run_status.json").read_text(encoding="utf-8")
+    )
+
+    config.data["auto_masks"]["min_component_area"] = 13
+
+    class FreshExtractor(_FakeQwenExtractor):
+        calls = 0
+
+        def analyze(self, image: Image.Image, prompt: str) -> dict[str, object]:
+            type(self).calls += 1
+            return super().analyze(image, prompt)
+
+    monkeypatch.setattr("iadgen_v2.auto_masks.QwenFeatureExtractor", FreshExtractor)
+    run_auto_masks(config)
+    current = json.loads(
+        (config.output_dir / "auto_masks" / "qwen" / "current_run.json").read_text(encoding="utf-8")
+    )
+
+    assert FreshExtractor.calls == 3
+    assert current["run_id"] != interrupted["run_id"]
+    assert current["records_resumed"] == 0
+    assert current["resume_count"] == 0
+
+
 def test_auto_masks_overwrite_false_carries_existing_rows_without_qwen(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

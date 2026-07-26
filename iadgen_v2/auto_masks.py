@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import importlib.util
+import socket
 from dataclasses import asdict, fields
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,7 +12,6 @@ from typing import Any
 from uuid import uuid4
 
 import numpy as np
-import pytest
 import skimage.filters
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageMath
 
@@ -28,6 +29,7 @@ from iadgen_v2.auto_mask.legacy_structure import infer_structure_attributes, inf
 from iadgen_v2.auto_mask.structure import evaluate_evidence_gate, infer_structure_profile_from_measurements
 from iadgen_v2.config import AppConfig, fingerprint
 from iadgen_v2.dataset import IMAGE_EXTENSIONS
+from iadgen_v2.governance import architecture_core_fingerprint
 from iadgen_v2.masks import write_mask_overlay, write_pixel_refined_bbox_masks, write_refined_bbox_masks
 from iadgen_v2.qwen_provider import (
     DEFAULT_LOCALIZATION_DECODING,
@@ -98,6 +100,118 @@ def _write_json_atomic(path: Path, value: object) -> None:
     temporary.replace(path)
 
 
+def _load_json_object(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {}
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _pid_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _resume_auto_mask_run(
+    output_dir: Path,
+    *,
+    auto_mask_fingerprint: str,
+    architecture_fingerprint: str,
+    enabled: bool,
+) -> dict[str, Any] | None:
+    if not enabled:
+        return None
+    status = _load_json_object(output_dir / "last_run_status.json")
+    status_value = str(status.get("status", ""))
+    if status_value not in {"failed", "interrupted", "publish_failed", "running"}:
+        return None
+    if str(status.get("auto_mask_fingerprint", "")) != auto_mask_fingerprint:
+        return None
+    if str(status.get("architecture_core_fingerprint", "")) != architecture_fingerprint:
+        return None
+    if status_value == "running":
+        host = str(status.get("hostname", ""))
+        pid = int(status.get("pid", 0) or 0)
+        if host == socket.gethostname() and _pid_is_alive(pid):
+            raise RuntimeError(
+                f"Auto-mask run {status.get('run_id')} is already active in process {pid}"
+            )
+        if host and host != socket.gethostname():
+            raise RuntimeError(
+                f"Auto-mask run {status.get('run_id')} is marked active on host {host}; "
+                "refusing an unsafe cross-host resume"
+            )
+
+    run_id = str(status.get("run_id", ""))
+    run_output_value = status.get("run_output_dir")
+    if not run_id or not run_output_value:
+        return None
+    run_output_dir = Path(str(run_output_value))
+    if not run_output_dir.is_dir():
+        return None
+    partial_value = status.get("partial_metadata_path")
+    if partial_value:
+        checkpoint_path = Path(str(partial_value))
+    elif status_value == "publish_failed":
+        checkpoint_path = run_output_dir / "metadata.jsonl"
+    else:
+        checkpoint_path = run_output_dir / "metadata.jsonl.tmp"
+    if not checkpoint_path.is_file():
+        return None
+
+    raw_rows = _load_auto_mask_rows(checkpoint_path)
+    records = [_auto_mask_record_from_row(row) for row in raw_rows]
+    seen: set[tuple[str, str, str]] = set()
+    pending_masks: list[tuple[Path, Path]] = []
+    run_root = run_output_dir.resolve()
+    for record in records:
+        key = _auto_mask_sample_key(record.category, record.defect_type, record.image_path)
+        if key in seen:
+            raise RuntimeError(f"Resume checkpoint contains duplicate sample: {key}")
+        seen.add(key)
+        settings = record.settings
+        if str(settings.get("auto_mask_fingerprint", "")) != auto_mask_fingerprint:
+            raise RuntimeError(f"Resume checkpoint fingerprint mismatch for sample: {record.image_path}")
+        if str(settings.get("auto_mask_run_id", "")) != run_id:
+            raise RuntimeError(f"Resume checkpoint run ID mismatch for sample: {record.image_path}")
+        role = str(settings.get("ground_truth_mask_variant", "eval_tight"))
+        variants = record.mask_variant_paths or dict(settings.get("mask_variant_paths", {}))
+        source = Path(str(variants.get(role) or record.refined_mask_path))
+        if not source.is_file():
+            raise FileNotFoundError(f"Resume checkpoint is missing mask artifact: {source}")
+        try:
+            source.resolve().relative_to(run_root)
+        except ValueError as exc:
+            raise RuntimeError(f"Resume checkpoint mask is outside its run directory: {source}") from exc
+        pending_masks.append((source, Path(record.mask_path)))
+
+    pending_path = run_output_dir / "metadata.jsonl.tmp"
+    pending_path.write_text(
+        "".join(json.dumps(row, sort_keys=True) + "\n" for row in raw_rows),
+        encoding="utf-8",
+    )
+    return {
+        "run_id": run_id,
+        "run_output_dir": run_output_dir,
+        "pending_metadata_path": pending_path,
+        "records": records,
+        "pending_masks": pending_masks,
+        "resumed_keys": seen,
+        "records_resumed": len(records),
+        "resume_count": int(status.get("resume_count", 0) or 0) + 1,
+    }
+
+
 def _publish_auto_mask_checkpoint(
     pending_masks: list[tuple[Path, Path]],
     *,
@@ -159,11 +273,35 @@ def run_auto_masks(config: AppConfig) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     metadata_path = output_dir / "metadata.jsonl"
-    run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
-    run_output_dir = output_dir / "runs" / run_id
-    run_output_dir.mkdir(parents=True, exist_ok=False)
+    auto_mask_fingerprint = _auto_fingerprint(config)
+    architecture_fingerprint = architecture_core_fingerprint(config)
+    resume_state = _resume_auto_mask_run(
+        output_dir,
+        auto_mask_fingerprint=auto_mask_fingerprint,
+        architecture_fingerprint=architecture_fingerprint,
+        enabled=bool(auto.get("resume_incomplete", False)),
+    )
+    if resume_state is None:
+        run_id = f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid4().hex[:8]}"
+        run_output_dir = output_dir / "runs" / run_id
+        run_output_dir.mkdir(parents=True, exist_ok=False)
+        pending_metadata_path = run_output_dir / "metadata.jsonl.tmp"
+        pending_metadata_path.write_text("", encoding="utf-8")
+        rows: list[AutoMaskRecord] = []
+        pending_ground_truth: list[tuple[Path, Path]] = []
+        resumed_keys: set[tuple[str, str, str]] = set()
+        records_resumed = 0
+        resume_count = 0
+    else:
+        run_id = str(resume_state["run_id"])
+        run_output_dir = Path(resume_state["run_output_dir"])
+        pending_metadata_path = Path(resume_state["pending_metadata_path"])
+        rows = list(resume_state["records"])
+        pending_ground_truth = list(resume_state["pending_masks"])
+        resumed_keys = set(resume_state["resumed_keys"])
+        records_resumed = int(resume_state["records_resumed"])
+        resume_count = int(resume_state["resume_count"])
     run_metadata_path = run_output_dir / "metadata.jsonl"
-    pending_metadata_path = run_output_dir / "metadata.jsonl.tmp"
     run_status_path = output_dir / "last_run_status.json"
     current_run_path = output_dir / "current_run.json"
     descriptions = _load_descriptions(config, auto)
@@ -182,7 +320,23 @@ def run_auto_masks(config: AppConfig) -> Path:
     write_availability(output_dir / "qwen_availability.json", availability)
     if not availability.ready:
         raise RuntimeError(f"Qwen auto-mask provider is not ready: {availability.failure_reason()}")
-    pending_metadata_path.write_text("", encoding="utf-8")
+    _write_json_atomic(
+        run_status_path,
+        {
+            "run_id": run_id,
+            "status": "running",
+            "records_completed": len(rows),
+            "records_resumed": records_resumed,
+            "resume_count": resume_count,
+            "run_output_dir": str(run_output_dir),
+            "pending_metadata_path": str(pending_metadata_path),
+            "preserved_metadata_path": str(metadata_path) if metadata_path.exists() else None,
+            "auto_mask_fingerprint": auto_mask_fingerprint,
+            "architecture_core_fingerprint": architecture_fingerprint,
+            "hostname": socket.gethostname(),
+            "pid": os.getpid(),
+        },
+    )
 
     qwen_model_id = str(auto.get("qwen_model", _fallback_qwen(config, "qwen_model", "Qwen/Qwen2.5-VL-3B-Instruct")))
     qwen_cache_dir = auto.get("qwen_cache_dir", _fallback_qwen(config, "qwen_cache_dir", None))
@@ -213,10 +367,11 @@ def run_auto_masks(config: AppConfig) -> Path:
         refresh=bool(auto.get("qwen_localization_cache_refresh", False)),
     )
 
-    rows: list[AutoMaskRecord] = []
-    pending_ground_truth: list[tuple[Path, Path]] = []
     try:
         for category, defect_type, image_path in _defect_images(config):
+            sample_key = _auto_mask_sample_key(category, defect_type, str(image_path))
+            if sample_key in resumed_keys:
+                continue
             image = Image.open(image_path).convert("RGB")
             publish_dataset_ground_truth = bool(
                 auto.get("publish_dataset_ground_truth", architecture != "generic_evidence")
@@ -227,7 +382,7 @@ def run_auto_masks(config: AppConfig) -> Path:
                 mask_dir = output_dir / "pseudo_ground_truth" / category / defect_type
             mask_path = mask_dir / f"{image_path.stem}_mask.png"
             if mask_path.exists() and not bool(auto.get("overwrite", False)):
-                existing = existing_by_sample.get(_auto_mask_sample_key(category, defect_type, str(image_path)))
+                existing = existing_by_sample.get(sample_key)
                 if existing is not None:
                     record = _auto_mask_record_from_row(existing)
                     rows.append(record)
@@ -464,7 +619,7 @@ def run_auto_masks(config: AppConfig) -> Path:
                     "mask_variant_paths": mask_artifacts.get("mask_variant_paths", {}),
                     "mask_variant_overlay_paths": mask_artifacts.get("mask_variant_overlay_paths", {}),
                     "qc": mask_artifacts["qc"],
-                    "auto_mask_fingerprint": _auto_fingerprint(config),
+                    "auto_mask_fingerprint": auto_mask_fingerprint,
                 },
             )
             rows.append(record)
@@ -481,12 +636,17 @@ def run_auto_masks(config: AppConfig) -> Path:
                 "run_id": run_id,
                 "status": "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed",
                 "records_completed": len(rows),
+                "records_resumed": records_resumed,
+                "resume_count": resume_count,
                 "partial_metadata_path": str(partial_path),
                 "preserved_metadata_path": str(metadata_path) if metadata_path.exists() else None,
                 "run_output_dir": str(run_output_dir),
                 "error_type": type(exc).__name__,
                 "error": str(exc),
-                "auto_mask_fingerprint": _auto_fingerprint(config),
+                "auto_mask_fingerprint": auto_mask_fingerprint,
+                "architecture_core_fingerprint": architecture_fingerprint,
+                "hostname": socket.gethostname(),
+                "pid": os.getpid(),
             },
         )
         raise
@@ -494,6 +654,7 @@ def run_auto_masks(config: AppConfig) -> Path:
         extractor.close()
 
     pending_metadata_path.replace(run_metadata_path)
+    (run_output_dir / "metadata.partial.jsonl").unlink(missing_ok=True)
     try:
         _publish_auto_mask_checkpoint(
             pending_ground_truth,
@@ -508,12 +669,17 @@ def run_auto_masks(config: AppConfig) -> Path:
                 "run_id": run_id,
                 "status": "publish_failed",
                 "records_completed": len(rows),
+                "records_resumed": records_resumed,
+                "resume_count": resume_count,
                 "run_metadata_path": str(run_metadata_path),
                 "preserved_metadata_path": str(metadata_path) if metadata_path.exists() else None,
                 "run_output_dir": str(run_output_dir),
                 "error_type": type(exc).__name__,
                 "error": str(exc),
-                "auto_mask_fingerprint": _auto_fingerprint(config),
+                "auto_mask_fingerprint": auto_mask_fingerprint,
+                "architecture_core_fingerprint": architecture_fingerprint,
+                "hostname": socket.gethostname(),
+                "pid": os.getpid(),
             },
         )
         raise
@@ -526,7 +692,10 @@ def run_auto_masks(config: AppConfig) -> Path:
             "run_metadata_path": str(run_metadata_path),
             "stable_metadata_path": str(metadata_path),
             "records": len(rows),
-            "auto_mask_fingerprint": _auto_fingerprint(config),
+            "records_resumed": records_resumed,
+            "resume_count": resume_count,
+            "auto_mask_fingerprint": auto_mask_fingerprint,
+            "architecture_core_fingerprint": architecture_fingerprint,
         },
     )
     _write_json_atomic(
@@ -535,10 +704,13 @@ def run_auto_masks(config: AppConfig) -> Path:
             "run_id": run_id,
             "status": "complete",
             "records_completed": len(rows),
+            "records_resumed": records_resumed,
+            "resume_count": resume_count,
             "metadata_path": str(metadata_path),
             "run_metadata_path": str(run_metadata_path),
             "run_output_dir": str(run_output_dir),
-            "auto_mask_fingerprint": _auto_fingerprint(config),
+            "auto_mask_fingerprint": auto_mask_fingerprint,
+            "architecture_core_fingerprint": architecture_fingerprint,
         },
     )
     _write_summary(report_dir / "summary.md", rows, metadata_path, auto)

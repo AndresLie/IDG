@@ -336,9 +336,39 @@ External reproduction is now partially unblocked:
   elapsed time improved `164.761 s -> 156.508 s`;
 - MVTec AD 2 is not present locally and requires its official access path.
 
-This does not reopen mask or generation tuning. The next R6 work is the full
-VisA inference/evaluation after resolving the frozen-RC/storage gate, then
-dependency acquisition for the remaining external reproductions.
+The frozen-RC, storage, and interruption gates are now resolved:
+
+- `auto-masks` can resume a failed, interrupted, orphaned, or publish-failed
+  run from its per-sample JSONL checkpoint;
+- resume requires exact auto-mask and architecture fingerprints, including the
+  code, selector, checkpoints, and model identities;
+- recovered mask artifacts must exist inside the original run directory;
+- malformed trailing checkpoint JSON is discarded before continuation;
+- a live process using the same output directory blocks a second writer;
+- changed configurations start a fresh run instead of mixing cohorts.
+
+The current implementation was resealed as
+`v3-generic-evidence-rc2-operational-20260726` only after the governed
+operational-equivalence command compared it with the original frozen VisA
+smoke output. All 12 samples matched with zero differences in Qwen regions,
+candidate scores, candidate measurements, calibrated predictions, selection
+decisions, fused evidence maps, and all 120 mask-role files. Official masks
+remained unopened.
+
+The full VisA preflight now passes:
+
+```text
+runtime anomaly images: 1,200
+normal-reference images: 8,659
+free storage: 16.21 GiB
+projected retained footprint: about 3.6 GiB
+Qwen/model/selector/freeze validation: passed
+resume mode: enabled
+```
+
+This does not reopen mask or generation tuning. The next R6 work is the
+11-12-hour full VisA inference followed by the one-shot locked evaluation,
+then dependency acquisition for the remaining external reproductions.
 
 Artifacts:
 

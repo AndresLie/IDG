@@ -1,0 +1,27 @@
+{
+  "baseline_metadata_path": "outputs/v3_generic_evidence_visa_smoke/auto_masks/qwen/runs/20260726T083031Z-11f6833f/metadata.jsonl",
+  "baseline_metadata_sha256": "cb4a361a454b15970f9729eb49050f2a118d173f96fa302330fd1f0419a207d7",
+  "candidate_architecture_tag": "v3-generic-evidence-rc2-operational-20260726",
+  "candidate_metadata_path": "outputs/v3_generic_evidence_visa_retention_smoke/auto_masks/qwen/runs/20260726T112627Z-a5349ba3/metadata.jsonl",
+  "candidate_metadata_sha256": "2e4ba9400b6761f134178054b38a0406981bb6ea77e567deb9155a71ab1f0992",
+  "differences": {
+    "candidate_measurements": 0,
+    "candidate_modes": 0,
+    "candidate_predictions": 0,
+    "candidate_rejections": 0,
+    "candidate_scores": 0,
+    "fused_evidence": 0,
+    "mask_roles": 0,
+    "qwen_region": 0,
+    "selected_refinement": 0,
+    "selection_decision": 0
+  },
+  "go": true,
+  "mask_roles_compared": 120,
+  "official_masks_opened": false,
+  "parent_architecture_tag": "v3-generic-evidence-frozen-20260723",
+  "parent_manifest_path": "reports/v3_generic_evidence_development/architecture_freeze/v3-generic-evidence-rc1.json",
+  "parent_manifest_sha256": "375b0aa8c4c3df81f17b350d1da8a9b2061ed99d546e0e956ff3914167808e47",
+  "samples_compared": 12,
+  "schema_version": 1
+}

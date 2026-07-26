@@ -1,0 +1,16 @@
+{
+  "approval_scope": "locked_confirmation_only",
+  "architecture_core_fingerprint": "f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23",
+  "architecture_tag": "v3-generic-evidence-rc2-operational-20260726",
+  "go": true,
+  "operational_equivalence_manifest": "reports/v3_generic_evidence_visa/architecture_freeze/v3-generic-evidence-rc2-operational-20260726-operational-equivalence.json",
+  "operational_equivalence_sha256": "b22802dc5b5177778da5c4bdaecc5ecf097c81bf09ffde8ba22a5ac2e698d209",
+  "parent_frozen_architecture_manifest": "reports/v3_generic_evidence_development/architecture_freeze/v3-generic-evidence-rc1.json",
+  "parent_frozen_architecture_sha256": "375b0aa8c4c3df81f17b350d1da8a9b2061ed99d546e0e956ff3914167808e47",
+  "pca_subspace_enabled": false,
+  "post_freeze_category_tuning_forbidden": true,
+  "reseal_scope": "behavior-equivalent operational hardening only",
+  "resealed_at_utc": "2026-07-26T15:57:56.513778+00:00",
+  "selector_sha256": "1f7fdb0c216f34f1c6b5f1561416f4dfcb5d2da00350347825190c53c5a91a68",
+  "specialists": "disabled"
+}
