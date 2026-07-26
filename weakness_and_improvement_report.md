@@ -334,6 +334,12 @@ External reproduction is now partially unblocked:
   warning-free rerun then reproduced all regions, candidate scores,
   measurements, calibrated predictions, fused maps, and 120 mask roles exactly;
   elapsed time improved `164.761 s -> 156.508 s`;
+- the committed RC2 implementation was rerun once more on the identical cohort.
+  It again produced zero differences in regions, candidate data, selection,
+  fused maps, and all 120 role masks. Elapsed time was `173.081 s`, which is
+  `+10.6%` slower than the immediately previous run. This is one timing pair,
+  not evidence of a stable throughput regression, but it must not be reported
+  as a speedup;
 - MVTec AD 2 is not present locally and requires its official access path.
 
 The frozen-RC, storage, and interruption gates are now resolved:
