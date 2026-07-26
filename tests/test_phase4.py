@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 import pytest
 from PIL import Image, ImageDraw
@@ -20,15 +21,21 @@ from iadgen_v2.phase4 import (
     _critic_guided_final_coverage_repair,
     _critic_guided_settings,
     _critic_guided_visibility_boost,
+    _critic_attempt_meets_stop,
     _final_coverage_repair_profile,
     _phase4_generation_critic,
+    _phase4_source_rows,
     _generation_seed,
+    _inpaint_pipeline_load_kwargs,
     _morphology_for_row,
+    _masked_inpaint_crop_box,
     _phase4_variants,
     _quality_diagnostics,
     _quality_profiles_for_row,
     _qwen_ip_adapter_hybrid_render,
     _qwen_latent_blend_harmonized_render,
+    _restore_masked_crop,
+    _resolve_visibility_band,
 )
 
 
@@ -158,6 +165,33 @@ def test_phase4_qwen_mask_only_conditioning_shape() -> None:
     assert list(projected.shape) == [1, 0, 768]
     assert pipe.last_kwargs["strength"] == 0.33
     assert pipe.last_kwargs["guidance_scale"] == 2.5
+
+
+def test_masked_crop_generation_zooms_thin_mask_and_restores_locally() -> None:
+    background = Image.new("RGB", (512, 512), (80, 80, 80))
+    mask = Image.new("L", background.size, 0)
+    ImageDraw.Draw(mask).line((210, 250, 300, 250), fill=255, width=4)
+    phase4 = {
+        "masked_crop_generation": {
+            "enabled": True,
+            "context_scale": 1.75,
+            "minimum_crop_size": 128,
+            "maximum_crop_size": 320,
+            "composite_blur_radius": 0.0,
+            "composite_mask_gamma": 1.0,
+        }
+    }
+
+    crop_box = _masked_inpaint_crop_box(mask, phase4)
+
+    assert crop_box is not None
+    assert crop_box[2] - crop_box[0] == 159
+    generated_crop = Image.new("RGB", (512, 512), (220, 20, 20))
+    restored = _restore_masked_crop(background, generated_crop, mask.crop(crop_box), crop_box, phase4)
+    restored_arr = np.asarray(restored)
+    assert tuple(restored_arr[250, 250]) == (220, 20, 20)
+    assert tuple(restored_arr[20, 20]) == (80, 80, 80)
+    assert tuple(restored_arr[crop_box[1] + 4, crop_box[0] + 4]) == (80, 80, 80)
 
 
 def test_phase4_full_hybrid_conditioning_shape() -> None:
@@ -725,3 +759,207 @@ def test_visibility_retry_disabled_by_default() -> None:
     # No coverage reject and no visibility target -> no boost retry engaged
     assert out.get("critic_retry_reason", "") == ""
     assert float(out.get("local_mask_noise_boost", 0.0)) == pytest.approx(0.0)
+
+
+def test_visibility_band_applies_default_then_morphology_override() -> None:
+    raw = {
+        "min_defect_visibility_score": 0.10,
+        "target_defect_visibility": 0.20,
+        "max_defect_visibility_score": 0.80,
+        "visibility_bands": {
+            "default": {"minimum": 0.15, "target": 0.30},
+            "multi_scuff": {"target": 0.25, "maximum": 0.55},
+        },
+    }
+
+    assert _resolve_visibility_band(raw, "scratch_band") == {
+        "minimum": 0.15,
+        "target": 0.30,
+        "maximum": 0.80,
+    }
+    assert _resolve_visibility_band(raw, "multi_scuff") == {
+        "minimum": 0.15,
+        "target": 0.25,
+        "maximum": 0.55,
+    }
+
+
+def test_visibility_band_rejects_inverted_limits() -> None:
+    with pytest.raises(ValueError, match="maximum"):
+        _resolve_visibility_band(
+            {"visibility_bands": {"scratch_band": {"minimum": 0.40, "target": 0.55, "maximum": 0.50}}},
+            "scratch_band",
+        )
+
+
+def test_excessive_visibility_retry_reduces_generation_magnitude() -> None:
+    phase4 = {"strength": 0.62, "guidance_scale": 8.0, "num_inference_steps": 22}
+    settings = {
+        "enabled": True,
+        "strength_step": 0.05,
+        "guidance_step": 0.5,
+        "step_increment": 2,
+        "max_strength": 0.80,
+        "max_guidance_scale": 10.0,
+        "max_inference_steps": 30,
+        "min_strength": 0.20,
+        "min_guidance_scale": 3.0,
+        "min_inference_steps": 8,
+        "max_defect_visibility_score": 0.70,
+        "over_visibility_strength_step": 0.10,
+        "over_visibility_guidance_step": 0.50,
+        "over_visibility_step_decrement": 3,
+        "over_visibility_prompt_suffix": "subtle realistic damage",
+    }
+    previous = {
+        "reject_reasons": ["excessive_defect_visibility"],
+        "critic_defect_visibility_score": 0.85,
+    }
+
+    out, prompt, _seed = _critic_guided_attempt_settings(
+        phase4,
+        "scratch",
+        {"defect_type": "scratch"},
+        1234,
+        1,
+        settings,
+        previous_attempt=previous,
+    )
+
+    assert out["critic_retry_reason"] == "excessive_defect_visibility"
+    assert out["strength"] == pytest.approx(0.52)
+    assert out["guidance_scale"] == pytest.approx(7.5)
+    assert out["num_inference_steps"] == 19
+    assert out.get("postprocess_mask_contrast_boost", 0.0) == pytest.approx(0.0)
+    assert prompt.endswith("subtle realistic damage")
+
+
+def test_leakage_retry_reduces_strength_instead_of_escalating() -> None:
+    phase4 = {"strength": 0.62, "guidance_scale": 8.0, "num_inference_steps": 22}
+    settings = {
+        "enabled": True,
+        "strength_step": 0.05,
+        "guidance_step": 0.5,
+        "step_increment": 2,
+        "max_strength": 0.80,
+        "max_guidance_scale": 10.0,
+        "max_inference_steps": 30,
+        "min_strength": 0.20,
+        "min_guidance_scale": 3.0,
+        "min_inference_steps": 8,
+        "fidelity_strength_step": 0.08,
+        "fidelity_guidance_step": 0.25,
+        "fidelity_step_decrement": 1,
+        "fidelity_retry_enabled": True,
+        "fidelity_prompt_suffix": "preserve outside texture",
+    }
+
+    out, prompt, _seed = _critic_guided_attempt_settings(
+        phase4,
+        "scratch",
+        {"defect_type": "scratch"},
+        1234,
+        1,
+        settings,
+        previous_attempt={
+            "reject_reasons": ["high_leakage"],
+            "critic_defect_visibility_score": 0.40,
+        },
+    )
+
+    assert out["critic_retry_reason"] == "fidelity_regression"
+    assert out["strength"] == pytest.approx(0.54)
+    assert out["guidance_scale"] == pytest.approx(7.75)
+    assert out["num_inference_steps"] == 21
+    assert prompt.endswith("preserve outside texture")
+
+
+def test_attempt_rank_prefers_visibility_near_configured_target() -> None:
+    near = {
+        "accepted": True,
+        "critic_score": 0.80,
+        "critic_defect_visibility_score": 0.46,
+        "critic_visibility_target": 0.45,
+        "adaptive_mask_coverage_score": 0.40,
+    }
+    far = {
+        **near,
+        "critic_defect_visibility_score": 0.65,
+    }
+    assert phase4_mod._critic_attempt_rank(near) > phase4_mod._critic_attempt_rank(far)
+
+
+def test_visibility_target_precedes_aggregate_score_within_accepted_band() -> None:
+    near = {
+        "accepted": True,
+        "critic_score": 0.70,
+        "critic_defect_visibility_score": 0.31,
+        "critic_visibility_target": 0.32,
+        "adaptive_mask_coverage_score": 0.40,
+    }
+    far_but_higher_score = {
+        **near,
+        "critic_score": 0.85,
+        "critic_defect_visibility_score": 0.55,
+    }
+
+    assert phase4_mod._critic_attempt_rank(near) > phase4_mod._critic_attempt_rank(far_but_higher_score)
+
+
+def test_inpaint_pipeline_kwargs_pin_fp16_safetensors_cache(tmp_path: Path) -> None:
+    config = _fixture_config(tmp_path)
+    config.data["models"]["sd15"].update(
+        {
+            "cache_dir": "model_cache/huggingface/hub",
+            "variant": "fp16",
+            "revision": "fixed-revision",
+            "use_safetensors": True,
+            "safety_checker": False,
+        }
+    )
+
+    kwargs = _inpaint_pipeline_load_kwargs(config, "cuda")
+
+    assert kwargs["torch_dtype"] == torch.float16
+    assert kwargs["variant"] == "fp16"
+    assert kwargs["revision"] == "fixed-revision"
+    assert kwargs["use_safetensors"] is True
+    assert kwargs["local_files_only"] is True
+    assert kwargs["cache_dir"] == str(config.resolve_path("model_cache/huggingface/hub"))
+    assert kwargs["safety_checker"] is None
+    assert kwargs["requires_safety_checker"] is False
+
+
+def test_phase4_source_rows_balances_category_grouped_metadata() -> None:
+    rows = [
+        {"category": category, "index": index}
+        for category in ("metal_nut", "tile", "wood")
+        for index in range(5)
+    ]
+
+    selected = _phase4_source_rows(
+        rows,
+        {"max_records": 9, "max_records_per_category": 3},
+    )
+
+    assert len(selected) == 9
+    assert [row["category"] for row in selected].count("metal_nut") == 3
+    assert [row["category"] for row in selected].count("tile") == 3
+    assert [row["category"] for row in selected].count("wood") == 3
+
+
+def test_controller_continues_until_visibility_target_is_reached() -> None:
+    settings = {"target_defect_visibility": 0.35, "exhaustive": False}
+
+    assert not _critic_attempt_meets_stop(
+        {"accepted": True, "critic_defect_visibility_score": 0.20},
+        settings,
+    )
+    assert _critic_attempt_meets_stop(
+        {"accepted": True, "critic_defect_visibility_score": 0.40},
+        settings,
+    )
+    assert not _critic_attempt_meets_stop(
+        {"accepted": False, "critic_defect_visibility_score": 0.40},
+        settings,
+    )

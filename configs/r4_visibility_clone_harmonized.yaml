@@ -1,0 +1,99 @@
+project:
+  output_dir: outputs/r4_visibility_reaudit/clone_harmonized
+  report_dir: reports/r4_visibility_reaudit/clone_harmonized
+
+dataset:
+  root: data/mvtec_ad
+  download: false
+  seed: 1337
+  adaptation_per_defect: 3
+  targets:
+    metal_nut: [scratch]
+    tile: [crack]
+    wood: [scratch]
+
+generation:
+  samples_per_category: 15
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect:
+    scratch: a narrow realistic surface scratch on an industrial material
+    crack: a narrow realistic surface crack on an industrial material
+  negative_prompt: text, watermark, logo, square boundary, warped surface, unrealistic defect, artifacts
+
+models:
+  sd15:
+    enabled: true
+    base_model: stable-diffusion-v1-5/stable-diffusion-inpainting
+    cache_dir: model_cache/huggingface/hub
+    revision: 8a4288a76071f7280aedbdb3253bdb9e9d5d84bb
+    variant: fp16
+    use_safetensors: true
+    safety_checker: false
+    local_files_only: true
+    dtype: float16
+    num_inference_steps: 18
+    guidance_scale: 7.2
+    strength: 0.55
+
+evaluation:
+  visibility_threshold: 0.02
+
+phase2:
+  provider: qwen
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  samples_per_category: 15
+  token_count: 16
+  feature_dim: 64
+  box_area_fraction:
+    scratch: 0.08
+    crack: 0.10
+  qwen_max_area_multiplier: 1.5
+  min_surface_coverage: 0.70
+
+phase4:
+  provider: qwen
+  device: cuda
+  variants: [clone_harmonized]
+  max_records: 9
+  max_records_per_category: 3
+  seeds_per_record: 2
+  image_size: 512
+  clone_harmonize_strength: 0.20
+  clone_harmonize_steps: 8
+  clone_harmonize_guidance_scale: 5.0
+  quality_profiles: [scratch_thin_detail]
+  quality_profile_filter_by_morphology: true
+  quality_profile_overrides:
+    scratch_thin_detail:
+      strength: 0.62
+      guidance_scale: 8.0
+      num_inference_steps: 22
+      mask_variant: inpaint_soft
+  critic_guided_regeneration:
+    enabled: true
+    max_attempts: 1
+    min_adaptive_mask_coverage_score: 0.35
+    min_texture_preservation_score: 0.85
+    min_leakage_score: 0.90
+    min_morphology_fit_score: 0.0
+    final_coverage_repair_enabled: false
+    weights:
+      feature_alignment: 0.10
+      mask_coverage: 0.10
+      texture_preservation: 0.25
+      leakage: 0.20
+      morphology_fit: 0.10
+      defect_visibility: 0.25
+    visibility_bands:
+      default: {minimum: 0.12, target: 0.30, maximum: 0.72}
+      scratch_band: {minimum: 0.12, target: 0.32, maximum: 0.72}
+      crack_band: {minimum: 0.14, target: 0.35, maximum: 0.76}
+

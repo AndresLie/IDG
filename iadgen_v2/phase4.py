@@ -20,7 +20,7 @@ from iadgen_v2.phase3 import GatedProjectionAdapter, PHASE3_SCHEMA_VERSION, _pha
 from iadgen_v2.records import write_json
 
 
-PHASE4_SCHEMA_VERSION = 8
+PHASE4_SCHEMA_VERSION = 9
 PHASE4_QWEN_VARIANTS = (
     "qwen_mask_only",
     "full_qwen_hybrid",
@@ -162,7 +162,7 @@ def _run_phase4_variant(config: AppConfig, provider: str, variant: str) -> Path:
     metadata_path.write_text("", encoding="utf-8")
     run_fingerprint = _phase4_fingerprint(config, provider)
     rows: list[Phase4Record] = []
-    limit = int(phase4.get("max_records", len(phase2_rows)))
+    phase2_rows = _phase4_source_rows(phase2_rows, phase4)
     device = _phase4_device(config)
     if adapter is not None:
         adapter = adapter.to(device)
@@ -174,7 +174,7 @@ def _run_phase4_variant(config: AppConfig, provider: str, variant: str) -> Path:
     seeds_per_record = int(phase4.get("seeds_per_record", 1))
     if seeds_per_record < 1:
         raise ValueError("phase4.seeds_per_record must be positive")
-    for base_index, row in enumerate(phase2_rows[:limit]):
+    for base_index, row in enumerate(phase2_rows):
         image = Image.open(row["background_path"]).convert("RGB")
         refined_mask = Image.open(row["refined_mask_path"]).convert("L")
         if refined_mask.size != image.size:
@@ -204,7 +204,8 @@ def _run_phase4_variant(config: AppConfig, provider: str, variant: str) -> Path:
                     torch.cuda.reset_peak_memory_stats()
                 generation_seed = _generation_seed(row, seed_index)
                 base_render_phase4 = {**phase4, **profile_settings, "negative_prompt": _negative_prompt(config, profile_settings)}
-                critic_settings = _critic_guided_settings(base_render_phase4, provider)
+                morphology = _morphology_for_row(row)
+                critic_settings = _critic_guided_settings(base_render_phase4, provider, morphology)
                 attempt_records: list[dict[str, Any]] = []
                 selected: dict[str, Any] | None = None
                 max_attempts = int(critic_settings.get("max_attempts", 1))
@@ -326,6 +327,11 @@ def _run_phase4_variant(config: AppConfig, provider: str, variant: str) -> Path:
                         "retry_reason": str(attempt_phase4.get("critic_retry_reason", "")),
                         "local_mask_noise_boost": round(float(attempt_phase4.get("local_mask_noise_boost", 0.0)), 4),
                         "postprocess_mask_contrast_boost": round(float(attempt_phase4.get("postprocess_mask_contrast_boost", 0.0)), 4),
+                        "critic_visibility_minimum": float(critic_settings.get("min_defect_visibility_score", 0.0)),
+                        "critic_visibility_target": float(critic_settings.get("target_defect_visibility", 0.0)),
+                        "critic_visibility_maximum": float(critic_settings.get("max_defect_visibility_score", 0.0)),
+                        "critic_visibility_band_morphology": str(critic_settings.get("visibility_band_morphology", morphology)),
+                        "masked_crop_box": list(_masked_inpaint_crop_box(inpaint_mask, attempt_phase4) or ()),
                         "prompt": attempt_prompt,
                     }
                     attempt_records.append(attempt_record)
@@ -341,7 +347,7 @@ def _run_phase4_variant(config: AppConfig, provider: str, variant: str) -> Path:
                     }
                     if selected is None or _critic_attempt_rank(attempt_record) > _critic_attempt_rank(selected["attempt_record"]):
                         selected = candidate
-                    if attempt_record["accepted"] and not bool(critic_settings.get("exhaustive", False)):
+                    if _critic_attempt_meets_stop(attempt_record, critic_settings):
                         break
                 if selected is None:
                     raise RuntimeError("Phase 4 generation produced no attempts")
@@ -516,6 +522,26 @@ def _load_phase2_records(config: AppConfig, provider: str) -> list[dict[str, Any
     if any(row.get("settings", {}).get("phase2_fingerprint") != expected for row in rows):
         raise ValueError("Phase 2 metadata does not match the active configuration; regenerate Phase 2 proposals first.")
     return rows
+
+
+def _phase4_source_rows(rows: list[dict[str, Any]], phase4: dict[str, Any]) -> list[dict[str, Any]]:
+    limit = int(phase4.get("max_records", len(rows)))
+    if limit < 1:
+        raise ValueError("phase4.max_records must be positive")
+    per_category = int(phase4.get("max_records_per_category", 0))
+    if per_category <= 0:
+        return rows[:limit]
+    selected: list[dict[str, Any]] = []
+    counts: dict[str, int] = {}
+    for row in rows:
+        category = str(row.get("category", "unknown"))
+        if counts.get(category, 0) >= per_category:
+            continue
+        selected.append(row)
+        counts[category] = counts.get(category, 0) + 1
+        if len(selected) >= limit:
+            break
+    return selected
 
 
 def _load_adapter(
@@ -760,14 +786,40 @@ def _load_inpaint_pipeline(config: AppConfig, device: str) -> Any:
     from diffusers import StableDiffusionInpaintPipeline
 
     model_config = dict(config.data["models"]["sd15"])
-    dtype = getattr(torch, str(model_config.get("dtype", "float16"))) if device == "cuda" else torch.float32
     pipe = StableDiffusionInpaintPipeline.from_pretrained(
         model_config["base_model"],
-        torch_dtype=dtype,
-        local_files_only=bool(model_config.get("local_files_only", True)),
+        **_inpaint_pipeline_load_kwargs(config, device),
     ).to(device)
     pipe.set_progress_bar_config(disable=True)
     return pipe
+
+
+def _inpaint_pipeline_load_kwargs(config: AppConfig, device: str) -> dict[str, Any]:
+    model_config = dict(config.data["models"]["sd15"])
+    dtype_name = str(model_config.get("dtype", "float16"))
+    if device == "cuda":
+        dtype = getattr(torch, dtype_name, None)
+        if not isinstance(dtype, torch.dtype):
+            raise ValueError(f"Unsupported models.sd15.dtype: {dtype_name}")
+    else:
+        dtype = torch.float32
+    kwargs: dict[str, Any] = {
+        "torch_dtype": dtype,
+        "local_files_only": bool(model_config.get("local_files_only", True)),
+    }
+    for key in ("variant", "revision"):
+        value = model_config.get(key)
+        if value:
+            kwargs[key] = str(value)
+    if "use_safetensors" in model_config:
+        kwargs["use_safetensors"] = bool(model_config["use_safetensors"])
+    cache_dir = model_config.get("cache_dir")
+    if cache_dir:
+        kwargs["cache_dir"] = str(config.resolve_path(str(cache_dir)))
+    if not bool(model_config.get("safety_checker", True)):
+        kwargs["safety_checker"] = None
+        kwargs["requires_safety_checker"] = False
+    return kwargs
 
 
 def _qwen_sd15_render(
@@ -836,6 +888,9 @@ def _qwen_sd15_text_render(
 ) -> tuple[Image.Image, torch.Tensor, torch.Tensor]:
     size = int(phase4.get("image_size", config.data.get("generation", {}).get("image_size", 512)))
     negative_prompt = str(phase4.get("negative_prompt", config.data.get("generation", {}).get("negative_prompt", "")))
+    crop_box = _masked_inpaint_crop_box(inpaint_mask, phase4)
+    render_image = image.crop(crop_box) if crop_box is not None else image
+    render_mask = inpaint_mask.crop(crop_box) if crop_box is not None else inpaint_mask
     prompt_embeds, negative_prompt_embeds = pipe.encode_prompt(
         prompt=prompt,
         device=device,
@@ -849,19 +904,83 @@ def _qwen_sd15_text_render(
     output = pipe(
         prompt_embeds=prompt_embeds,
         negative_prompt_embeds=negative_prompt_embeds,
-        image=_critic_guided_input_image(image, inpaint_mask, phase4, generation_seed).resize((size, size), Image.Resampling.BILINEAR),
-        mask_image=inpaint_mask.resize((size, size), Image.Resampling.BILINEAR),
+        image=_critic_guided_input_image(render_image, render_mask, phase4, generation_seed).resize(
+            (size, size), Image.Resampling.BILINEAR
+        ),
+        mask_image=render_mask.resize((size, size), Image.Resampling.BILINEAR),
         guidance_scale=float(phase4.get("guidance_scale", config.data["models"]["sd15"].get("guidance_scale", 7.5))),
         num_inference_steps=int(phase4.get("num_inference_steps", config.data["models"]["sd15"].get("num_inference_steps", 20))),
         strength=float(phase4.get("strength", config.data["models"]["sd15"].get("strength", 0.55))),
         generator=generator,
     ).images[0]
+    if crop_box is not None:
+        output = _restore_masked_crop(image, output, render_mask, crop_box, phase4)
+    else:
+        output = output.resize(image.size, Image.Resampling.BILINEAR)
     projected = torch.empty(
         (prompt_embeds.shape[0], 0, prompt_embeds.shape[-1]),
         device=prompt_embeds.device,
         dtype=prompt_embeds.dtype,
     )
-    return output.resize(image.size, Image.Resampling.BILINEAR), prompt_embeds, projected
+    return output, prompt_embeds, projected
+
+
+def _masked_inpaint_crop_box(
+    mask: Image.Image,
+    phase4: dict[str, Any],
+) -> tuple[int, int, int, int] | None:
+    settings = phase4.get("masked_crop_generation", {})
+    if not isinstance(settings, dict) or not bool(settings.get("enabled", False)):
+        return None
+    active = np.asarray(mask.convert("L"), dtype=np.uint8) > int(settings.get("mask_threshold", 8))
+    if not active.any():
+        return None
+    max_mask_area = float(settings.get("max_mask_area_fraction", 0.20))
+    if float(active.mean()) > max_mask_area:
+        return None
+    ys, xs = np.where(active)
+    x0, x1 = int(xs.min()), int(xs.max()) + 1
+    y0, y1 = int(ys.min()), int(ys.max()) + 1
+    width, height = mask.size
+    context_scale = max(1.0, float(settings.get("context_scale", 1.75)))
+    minimum = max(32, int(settings.get("minimum_crop_size", 128)))
+    maximum = max(minimum, int(settings.get("maximum_crop_size", min(width, height))))
+    span = int(round(max(x1 - x0, y1 - y0) * context_scale))
+    span = min(max(span, minimum), maximum, width, height)
+    if span >= min(width, height) and width == height:
+        return None
+    center_x = (x0 + x1) // 2
+    center_y = (y0 + y1) // 2
+    left = min(max(0, center_x - span // 2), width - span)
+    top = min(max(0, center_y - span // 2), height - span)
+    return left, top, left + span, top + span
+
+
+def _restore_masked_crop(
+    background: Image.Image,
+    generated_crop: Image.Image,
+    crop_mask: Image.Image,
+    crop_box: tuple[int, int, int, int],
+    phase4: dict[str, Any],
+) -> Image.Image:
+    crop_size = (crop_box[2] - crop_box[0], crop_box[3] - crop_box[1])
+    generated = np.asarray(
+        generated_crop.convert("RGB").resize(crop_size, Image.Resampling.LANCZOS),
+        dtype=np.float32,
+    )
+    original = np.asarray(background.convert("RGB").crop(crop_box), dtype=np.float32)
+    settings = phase4.get("masked_crop_generation", {})
+    blur_radius = float(settings.get("composite_blur_radius", 0.75)) if isinstance(settings, dict) else 0.75
+    alpha_image = crop_mask.convert("L").resize(crop_size, Image.Resampling.BILINEAR)
+    if blur_radius > 0.0:
+        alpha_image = alpha_image.filter(ImageFilter.GaussianBlur(radius=blur_radius))
+    alpha = np.asarray(alpha_image, dtype=np.float32) / 255.0
+    gamma = max(0.1, float(settings.get("composite_mask_gamma", 0.75))) if isinstance(settings, dict) else 0.75
+    alpha = np.power(np.clip(alpha, 0.0, 1.0), gamma)[..., None]
+    blended = original * (1.0 - alpha) + generated * alpha
+    restored = background.convert("RGB").copy()
+    restored.paste(Image.fromarray(np.uint8(np.clip(blended, 0.0, 255.0)), "RGB"), crop_box[:2])
+    return restored
 
 
 def _qwen_clone_harmonized_render(
@@ -1431,7 +1550,11 @@ def _quality_diagnostics(
     }
 
 
-def _critic_guided_settings(phase4: dict[str, Any], provider: str) -> dict[str, Any]:
+def _critic_guided_settings(
+    phase4: dict[str, Any],
+    provider: str,
+    morphology: str | None = None,
+) -> dict[str, Any]:
     raw = phase4.get("critic_guided_regeneration", {})
     if not isinstance(raw, dict):
         raw = {}
@@ -1439,6 +1562,7 @@ def _critic_guided_settings(phase4: dict[str, Any], provider: str) -> dict[str, 
     max_attempts = int(raw.get("max_attempts", 3 if enabled else 1))
     if max_attempts < 1:
         raise ValueError("phase4.critic_guided_regeneration.max_attempts must be positive")
+    visibility_band = _resolve_visibility_band(raw, morphology)
     return {
         "enabled": enabled,
         "max_attempts": max_attempts if enabled else 1,
@@ -1452,8 +1576,10 @@ def _critic_guided_settings(phase4: dict[str, Any], provider: str) -> dict[str, 
         # B-S1 visibility controls (default off): threshold gate + controller
         # retry target + optional critic weights/gains flow to score_generation
         # and _critic_guided_attempt_settings via this settings dict.
-        "min_defect_visibility_score": float(raw.get("min_defect_visibility_score", 0.0)),
-        "target_defect_visibility": float(raw.get("target_defect_visibility", 0.0)),
+        "visibility_band_morphology": str(morphology or "default"),
+        "min_defect_visibility_score": visibility_band["minimum"],
+        "target_defect_visibility": visibility_band["target"],
+        "max_defect_visibility_score": visibility_band["maximum"],
         "weights": raw.get("weights", {}) if isinstance(raw.get("weights"), dict) else {},
         "visibility_deviation_gain": float(raw.get("visibility_deviation_gain", 6.0)),
         "visibility_gradient_gain": float(raw.get("visibility_gradient_gain", 3.0)),
@@ -1469,6 +1595,16 @@ def _critic_guided_settings(phase4: dict[str, Any], provider: str) -> dict[str, 
         "max_strength": float(raw.get("max_strength", 0.78)),
         "max_guidance_scale": float(raw.get("max_guidance_scale", 9.0)),
         "max_inference_steps": int(raw.get("max_inference_steps", 28)),
+        "min_strength": float(raw.get("min_strength", 0.20)),
+        "min_guidance_scale": float(raw.get("min_guidance_scale", 3.0)),
+        "min_inference_steps": int(raw.get("min_inference_steps", 8)),
+        "over_visibility_strength_step": float(raw.get("over_visibility_strength_step", 0.10)),
+        "over_visibility_guidance_step": float(raw.get("over_visibility_guidance_step", 0.45)),
+        "over_visibility_step_decrement": int(raw.get("over_visibility_step_decrement", 2)),
+        "fidelity_strength_step": float(raw.get("fidelity_strength_step", 0.08)),
+        "fidelity_guidance_step": float(raw.get("fidelity_guidance_step", 0.25)),
+        "fidelity_step_decrement": int(raw.get("fidelity_step_decrement", 1)),
+        "fidelity_retry_enabled": bool(raw.get("fidelity_retry_enabled", False)),
         "retry_seed_stride": int(raw.get("retry_seed_stride", 97_531)),
         "low_coverage_extra_strength": float(raw.get("low_coverage_extra_strength", 0.10)),
         "low_coverage_extra_guidance": float(raw.get("low_coverage_extra_guidance", 0.45)),
@@ -1494,7 +1630,56 @@ def _critic_guided_settings(phase4: dict[str, Any], provider: str) -> dict[str, 
                 "clearly visible defect occupying the selected mask, strong local material damage",
             )
         ),
+        "over_visibility_prompt_suffix": str(
+            raw.get(
+                "over_visibility_prompt_suffix",
+                "subtle physically plausible defect, preserve the surrounding material texture",
+            )
+        ),
+        "fidelity_prompt_suffix": str(
+            raw.get(
+                "fidelity_prompt_suffix",
+                "confine the edit to the selected mask and preserve surrounding material texture",
+            )
+        ),
     }
+
+
+def _resolve_visibility_band(raw: dict[str, Any], morphology: str | None) -> dict[str, float]:
+    bands = raw.get("visibility_bands", {})
+    if not isinstance(bands, dict):
+        raise ValueError("phase4.critic_guided_regeneration.visibility_bands must be a mapping")
+    merged: dict[str, Any] = {
+        "minimum": raw.get("min_defect_visibility_score", 0.0),
+        "target": raw.get("target_defect_visibility", 0.0),
+        "maximum": raw.get("max_defect_visibility_score", 0.0),
+    }
+    for key in ("default", str(morphology or "")):
+        override = bands.get(key)
+        if override is None:
+            continue
+        if not isinstance(override, dict):
+            raise ValueError(f"Visibility band {key!r} must be a mapping")
+        for canonical, aliases in {
+            "minimum": ("minimum", "min", "min_defect_visibility_score"),
+            "target": ("target", "target_defect_visibility"),
+            "maximum": ("maximum", "max", "max_defect_visibility_score"),
+        }.items():
+            for alias in aliases:
+                if alias in override:
+                    merged[canonical] = override[alias]
+                    break
+    resolved = {key: float(value) for key, value in merged.items()}
+    if any(value < 0.0 or value > 1.0 for value in resolved.values()):
+        raise ValueError("Visibility band values must be in [0, 1]")
+    minimum = resolved["minimum"]
+    target = resolved["target"]
+    maximum = resolved["maximum"]
+    if target > 0.0 and target < minimum:
+        raise ValueError("Visibility band target must be >= minimum")
+    if maximum > 0.0 and maximum < max(minimum, target):
+        raise ValueError("Visibility band maximum must be >= minimum and target")
+    return resolved
 
 
 def _critic_guided_attempt_settings(
@@ -1516,15 +1701,37 @@ def _critic_guided_attempt_settings(
     # off) so behavior is unchanged until a re-audit sets the band.
     previous_visibility = float((previous_attempt or {}).get("critic_defect_visibility_score", 1.0))
     visibility_target = float(critic_settings.get("target_defect_visibility", 0.0))
+    visibility_maximum = float(critic_settings.get("max_defect_visibility_score", 0.0))
     low_visibility_retry = "low_defect_visibility" in previous_reasons or (
         visibility_target > 0.0 and previous_visibility < visibility_target
     )
-    low_coverage_retry = "low_mask_coverage" in previous_reasons or not previous_reasons
+    over_visibility_retry = "excessive_defect_visibility" in previous_reasons or (
+        visibility_maximum > 0.0 and previous_visibility > visibility_maximum
+    )
+    fidelity_retry = bool(critic_settings.get("fidelity_retry_enabled", False)) and bool(
+        previous_reasons & {"high_leakage", "poor_texture_preservation"}
+    )
+    low_coverage_retry = "low_mask_coverage" in previous_reasons
+    if over_visibility_retry or fidelity_retry:
+        if over_visibility_retry:
+            attempt_phase4["critic_retry_reason"] = "excessive_defect_visibility"
+            strength_step = float(critic_settings.get("over_visibility_strength_step", 0.10))
+            guidance_step = float(critic_settings.get("over_visibility_guidance_step", 0.45))
+            inference_step = int(critic_settings.get("over_visibility_step_decrement", 2))
+        else:
+            attempt_phase4["critic_retry_reason"] = "fidelity_regression"
+            strength_step = float(critic_settings.get("fidelity_strength_step", 0.08))
+            guidance_step = float(critic_settings.get("fidelity_guidance_step", 0.25))
+            inference_step = int(critic_settings.get("fidelity_step_decrement", 1))
+        strength_delta = -strength_step * attempt_index
+        guidance_delta = -guidance_step * attempt_index
+        step_delta = -inference_step * attempt_index
+    else:
+        strength_delta = float(critic_settings["strength_step"]) * attempt_index
+        guidance_delta = float(critic_settings["guidance_step"]) * attempt_index
+        step_delta = int(critic_settings["step_increment"]) * attempt_index
     boost_retry = low_coverage_retry or low_visibility_retry
-    strength_delta = float(critic_settings["strength_step"]) * attempt_index
-    guidance_delta = float(critic_settings["guidance_step"]) * attempt_index
-    step_delta = int(critic_settings["step_increment"]) * attempt_index
-    if boost_retry:
+    if boost_retry and not over_visibility_retry and not fidelity_retry:
         strength_delta += float(critic_settings.get("low_coverage_extra_strength", 0.0))
         guidance_delta += float(critic_settings.get("low_coverage_extra_guidance", 0.0))
         step_delta += int(critic_settings.get("low_coverage_extra_steps", 0))
@@ -1556,7 +1763,13 @@ def _critic_guided_attempt_settings(
         "latent_blend_harmonize_strength",
     ):
         if key in attempt_phase4 or key == "strength":
-            attempt_phase4[key] = min(float(critic_settings["max_strength"]), float(attempt_phase4.get(key, attempt_phase4.get("strength", 0.55))) + strength_delta)
+            attempt_phase4[key] = max(
+                float(critic_settings.get("min_strength", 0.20)),
+                min(
+                    float(critic_settings["max_strength"]),
+                    float(attempt_phase4.get(key, attempt_phase4.get("strength", 0.55))) + strength_delta,
+                ),
+            )
     for key in (
         "guidance_scale",
         "clone_harmonize_guidance_scale",
@@ -1565,9 +1778,12 @@ def _critic_guided_attempt_settings(
         "latent_blend_guidance_scale",
     ):
         if key in attempt_phase4 or key == "guidance_scale":
-            attempt_phase4[key] = min(
-                float(critic_settings["max_guidance_scale"]),
-                float(attempt_phase4.get(key, attempt_phase4.get("guidance_scale", 7.5))) + guidance_delta,
+            attempt_phase4[key] = max(
+                float(critic_settings.get("min_guidance_scale", 3.0)),
+                min(
+                    float(critic_settings["max_guidance_scale"]),
+                    float(attempt_phase4.get(key, attempt_phase4.get("guidance_scale", 7.5))) + guidance_delta,
+                ),
             )
     for key in (
         "num_inference_steps",
@@ -1577,13 +1793,21 @@ def _critic_guided_attempt_settings(
         "latent_blend_harmonize_steps",
     ):
         if key in attempt_phase4 or key == "num_inference_steps":
-            attempt_phase4[key] = min(
-                int(critic_settings["max_inference_steps"]),
-                int(attempt_phase4.get(key, attempt_phase4.get("num_inference_steps", 20))) + step_delta,
+            attempt_phase4[key] = max(
+                int(critic_settings.get("min_inference_steps", 8)),
+                min(
+                    int(critic_settings["max_inference_steps"]),
+                    int(attempt_phase4.get(key, attempt_phase4.get("num_inference_steps", 20))) + step_delta,
+                ),
             )
-    suffixes = [str(critic_settings.get("prompt_suffix", "")).strip()]
-    if low_coverage_retry:
-        suffixes.append(str(critic_settings.get("low_coverage_prompt_suffix", "")).strip())
+    if over_visibility_retry:
+        suffixes = [str(critic_settings.get("over_visibility_prompt_suffix", "")).strip()]
+    elif fidelity_retry:
+        suffixes = [str(critic_settings.get("fidelity_prompt_suffix", "")).strip()]
+    else:
+        suffixes = [str(critic_settings.get("prompt_suffix", "")).strip()]
+        if low_coverage_retry:
+            suffixes.append(str(critic_settings.get("low_coverage_prompt_suffix", "")).strip())
     suffix = ", ".join(suffix for suffix in suffixes if suffix)
     attempt_prompt = f"{prompt}, {suffix}" if suffix else prompt
     attempt_seed = int(generation_seed) + int(critic_settings.get("retry_seed_stride", 97_531)) * attempt_index
@@ -1944,12 +2168,24 @@ def _critic_attempt_rank(attempt: dict[str, Any]) -> tuple[int, float, float, fl
     # the explicit tiebreaker (ahead of coverage) so the controller prefers the
     # most visibly-defective attempt rather than the one that merely changed the
     # most pixels.
-    return (
-        1 if bool(attempt.get("accepted", False)) else 0,
-        float(attempt.get("critic_score", 0.0)),
-        float(attempt.get("critic_defect_visibility_score", 0.0)),
-        float(attempt.get("adaptive_mask_coverage_score", 0.0)),
-    )
+    visibility = float(attempt.get("critic_defect_visibility_score", 0.0))
+    target = float(attempt.get("critic_visibility_target", 0.0))
+    visibility_rank = -abs(visibility - target) if target > 0.0 else visibility
+    accepted = 1 if bool(attempt.get("accepted", False)) else 0
+    critic_score = float(attempt.get("critic_score", 0.0))
+    coverage = float(attempt.get("adaptive_mask_coverage_score", 0.0))
+    if target > 0.0:
+        return accepted, visibility_rank, critic_score, coverage
+    return accepted, critic_score, visibility_rank, coverage
+
+
+def _critic_attempt_meets_stop(attempt: dict[str, Any], settings: dict[str, Any]) -> bool:
+    if bool(settings.get("exhaustive", False)) or not bool(attempt.get("accepted", False)):
+        return False
+    target = float(settings.get("target_defect_visibility", 0.0))
+    if target <= 0.0:
+        return True
+    return float(attempt.get("critic_defect_visibility_score", 0.0)) >= target
 
 
 def _effective_strength(phase4: dict[str, Any], variant: str) -> float:

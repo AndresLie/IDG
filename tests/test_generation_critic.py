@@ -50,6 +50,26 @@ def test_visibility_gate_rejects_faint_when_enabled() -> None:
     assert "low_defect_visibility" in scored.reject_reasons
 
 
+def test_visibility_gate_rejects_excessive_edit_when_upper_band_enabled() -> None:
+    background = Image.new("RGB", (32, 32), (128, 128, 128))
+    mask = _mask_32()
+    excessive = background.copy()
+    excessive.paste(Image.new("RGB", background.size, (250, 5, 5)), mask=mask)
+    settings = {
+        "critic_image_size": 160,
+        "min_mask_coverage_score": 0.0,
+        "min_texture_preservation_score": 0.0,
+        "min_leakage_score": 0.0,
+        "min_morphology_fit_score": 0.0,
+        "max_defect_visibility_score": 0.55,
+    }
+
+    scored = score_generation(excessive, background, mask, mask, settings, require_reference=False)
+
+    assert scored.defect_visibility_score > 0.55
+    assert "excessive_defect_visibility" in scored.reject_reasons
+
+
 def test_generation_critic_rejects_clean_output_and_accepts_visible_mask_edit() -> None:
     background = Image.new("RGB", (32, 32), (96, 96, 96))
     mask = Image.new("L", background.size, 0)

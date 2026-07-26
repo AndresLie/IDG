@@ -304,6 +304,9 @@ def _reject_reasons(
     # settings.min_defect_visibility_score to enforce visible defects.
     if visibility < float(settings.get("min_defect_visibility_score", 0.0)):
         reasons.append("low_defect_visibility")
+    max_visibility = float(settings.get("max_defect_visibility_score", 0.0))
+    if max_visibility > 0.0 and visibility > max_visibility:
+        reasons.append("excessive_defect_visibility")
     return reasons
 
 
