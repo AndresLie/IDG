@@ -372,18 +372,21 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. A bounded first execution plus an immediate
-resume validation completed `60/1,200` runtime images under the same run ID.
-The recovery path reused all 55 rows from the first interruption and advanced
-the checkpoint without recomputation. Observed throughput is approximately
-`16.7 s/image`, projecting roughly `5.6 hours` rather than 11-12 hours. All
-first 60 candle rows are currently `needs_review`; this is an unscored
-confidence-transfer warning, not a quality result, and no official masks have
-been opened.
+The full frozen run has now begun. Three bounded executions have completed
+`115/1,200` runtime images under the same run ID. The two resume operations
+reused `55` and then `60` checkpoint rows without duplication. Exact cumulative
+throughput is `17.765 s/image`, projecting about `5.35` additional hours and a
+`4.69 GiB` final run footprint. The first 100 candle rows and 15 capsule rows
+contain 113 `needs_review` and two `soft_mask_only` decisions. The new candle
+slice has expected IoU similar to the first checkpoint, while the first capsule
+slice has low expected IoU (`0.1078`) and high source disagreement (`0.6291`).
+This is an unscored confidence-transfer warning, not a quality result, and no
+official masks have been opened.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 5.6-hour VisA inference, run the one-shot locked
-evaluation, then acquire dependencies for the remaining external reproductions.
+and complete the approximately 5.35-hour remaining VisA inference, run the
+one-shot locked evaluation, then acquire dependencies for the remaining
+external reproductions.
 
 Artifacts:
 
