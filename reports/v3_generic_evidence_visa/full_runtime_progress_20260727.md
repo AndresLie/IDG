@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 291
-progress: 24.25%
+runtime samples completed: 355
+progress: 29.58%
 ```
 
 ## Resume Validation
@@ -77,6 +77,14 @@ An eighth bounded command:
 - removed all 14 artifacts for incomplete `cashew_bad_091`, leaving every
   checkpointed row and retained image intact.
 
+A ninth bounded command:
+
+- reused all 291 checkpoint rows and incremented `resume_count` to 8;
+- completed the final nine cashew rows;
+- added the first 55 chewing-gum rows;
+- stopped at 355 unique records during selector inference;
+- left no corrupt retained image or incomplete checkpoint row.
+
 Current checkpoint:
 
 ```text
@@ -91,8 +99,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `291 / 1,200` |
-| Current run artifacts | `1,484.0 MiB` |
+| Completed rows | `355 / 1,200` |
+| Current run artifacts | `1,665.1 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -105,10 +113,12 @@ incomplete locked run.
 | Seventh-vs-sixth segment rate change | `-0.70%` |
 | Eighth-segment rate, 30 cashew rows | `33.293 s/image` |
 | Eighth-vs-seventh segment rate change | `+2.47%` |
-| Cumulative exact rate | `23.796 s/image` |
-| Projected remaining compute | approximately `6.01 hours` |
-| Projected total compute | approximately `7.93 hours` |
-| Linear artifact projection | approximately `5.98 GiB` |
+| Ninth-segment rate, 64 transition rows | `15.401 s/image` |
+| Ninth-vs-eighth segment rate change | `-53.74%` |
+| Cumulative exact rate | `22.282 s/image` |
+| Projected remaining compute | approximately `5.23 hours` |
+| Projected total compute | approximately `7.43 hours` |
+| Linear artifact projection | approximately `5.50 GiB` |
 | Free storage after checkpoint | approximately `15 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
@@ -116,35 +126,41 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains all candle and capsule anomalies plus the first 91
-cashew anomalies:
+The checkpoint now contains three complete categories plus the first 55
+chewing-gum anomalies:
 
 ```text
 candle: 100
 capsules: 100
-cashew: 91
+cashew: 100
+chewinggum: 55
 
-needs_review: 259
-soft_mask_only: 32
+needs_review: 288
+soft_mask_only: 67
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 291 rows:
+Selected proposal modes over all 355 rows:
 
 ```text
-fused_q975: 121
-fused_q950: 60
-fused_q900: 39
-fused_q950_component_1: 24
+fused_q975: 122
+fused_q950: 61
+fused_q900: 46
+fused_q950_component_1: 28
 fused_q975_component_1: 17
-fused_q900_component_1: 13
-fused_q850_component_1: 6
-fused_q850: 2
-edge_fused_q900_component_1_2: 2
-edge_fused_q850_component_1_1: 4
+fused_q900_component_1: 16
+fused_q850_component_1: 10
+fused_q850: 7
+sam2_fused_q850_1: 29
+edge_fused_q900_component_1_2: 3
+edge_fused_q850_component_1_1: 5
 edge_fused_q900_component_1_1: 1
-edge_fused_q850_component_1_2: 1
+edge_fused_q850_component_1_2: 2
 fused_q900_component_2: 1
+edge_fused_q850_1: 2
+edge_fused_q850_2: 3
+edge_fused_q900_1: 1
+edge_fused_q900_2: 1
 ```
 
 The latest segment's exact selector diagnostics are:
@@ -218,6 +234,31 @@ Evidence providers agree more closely, but Qwen localization falls back much
 more often and selector confidence drops. This makes localization validity the
 strongest unscored explanation for the within-category shift.
 
+The final nine cashew rows then shift sharply upward:
+
+```text
+mean expected IoU: 0.3288
+mean conformal IoU lower bound: 0.1933
+Qwen valid localization: 8/9
+soft_mask_only: 6/9
+```
+
+The first 55 chewing-gum rows are the strongest external acceptance slice so
+far:
+
+```text
+mean expected IoU: 0.2415
+mean conformal IoU lower bound: 0.1117
+mean source disagreement: 0.8225
+Qwen valid localization: 53/55
+soft_mask_only: 29/55
+SAM2-selected proposal: 29/55
+```
+
+The acceptance increase coincides with valid localization and SAM2 selection,
+but source disagreement is extremely high. Only locked labels can determine
+whether SAM2 is resolving useful boundaries or publishing overconfident masks.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -226,7 +267,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-c89c5374239d18497bd0369460f395b89273e476990c609be3819133898b4cbe
+5ae0cdca75e4208ce2bc45aeaa41a7b290b406386d3d7eb8c6bae90f6fa0805d
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23

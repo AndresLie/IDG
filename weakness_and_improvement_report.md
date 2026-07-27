@@ -372,19 +372,18 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Eight bounded executions have completed
-`291/1,200` runtime images under the same run ID. The seven resume operations
-reused `55`, `60`, `115`, `159`, `201`, `231`, and then `261` checkpoint rows
-without duplication. Exact cumulative throughput is `23.796 s/image`,
-projecting about `6.01` additional hours and a `5.98 GiB` final run footprint.
-The checkpoint contains all 100 candle and capsule anomalies plus 91 cashew
-rows, with 259 `needs_review` and 32 `soft_mask_only` decisions. In the latest
-matched 30-versus-30 cashew comparison, expected IoU falls from `0.2112` to
-`0.1723`, lower bound falls from `0.0758` to `0.0370`, and soft-mask coverage
-falls from nine to three rows. Source disagreement improves, but Qwen
-full-image fallback rises from one to eight rows. This remains an unscored
-confidence-transfer warning, not a quality result, and no official masks have
-been opened.
+The full frozen run has now begun. Nine bounded executions have completed
+`355/1,200` runtime images under the same run ID. The eight resume operations
+reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, and then `291`
+checkpoint rows without duplication. Exact cumulative throughput is
+`22.282 s/image`, projecting about `5.23` additional hours and a `5.50 GiB`
+final run footprint. The checkpoint contains complete candle, capsule, and
+cashew categories plus 55 chewing-gum rows, with 288 `needs_review` and 67
+`soft_mask_only` decisions. Chewing gum is the strongest external acceptance
+slice so far: 29 of 55 rows are `soft_mask_only`, Qwen is valid on 53, and SAM2
+is selected on 29. Mean source disagreement is nevertheless `0.8225`, so this
+remains an unscored confidence-transfer warning, not a quality result, and no
+official masks have been opened.
 
 The fifth interruption also exposed a bounded production weakness: PNG role
 artifacts are written directly rather than atomically. One corrupt file was
@@ -394,7 +393,7 @@ and no checkpoint row was affected. Do not change this during the frozen run;
 add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 6.01-hour remaining VisA inference, run the
+and complete the approximately 5.23-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 
