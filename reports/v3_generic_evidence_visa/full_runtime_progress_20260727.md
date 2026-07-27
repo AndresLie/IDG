@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 261
-progress: 21.75%
+runtime samples completed: 291
+progress: 24.25%
 ```
 
 ## Resume Validation
@@ -68,6 +68,15 @@ A seventh bounded command:
 - interrupted during proposal construction without corrupting retained images;
 - preserved the same frozen fingerprints and sealed reference boundary.
 
+An eighth bounded command:
+
+- reused all 261 checkpoint rows and incremented `resume_count` to 7;
+- added another category-matched 30-row cashew segment;
+- stopped at 291 unique records;
+- interrupted while writing the next uncheckpointed sample overlay;
+- removed all 14 artifacts for incomplete `cashew_bad_091`, leaving every
+  checkpointed row and retained image intact.
+
 Current checkpoint:
 
 ```text
@@ -82,8 +91,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `261 / 1,200` |
-| Current run artifacts | `1,292.2 MiB` |
+| Completed rows | `291 / 1,200` |
+| Current run artifacts | `1,484.0 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -94,10 +103,12 @@ incomplete locked run.
 | Sixth-vs-fifth segment rate change | `+42.17%` |
 | Seventh-segment rate, 30 cashew rows | `32.492 s/image` |
 | Seventh-vs-sixth segment rate change | `-0.70%` |
-| Cumulative exact rate | `22.704 s/image` |
-| Projected remaining compute | approximately `5.92 hours` |
-| Projected total compute | approximately `7.57 hours` |
-| Linear artifact projection | approximately `5.80 GiB` |
+| Eighth-segment rate, 30 cashew rows | `33.293 s/image` |
+| Eighth-vs-seventh segment rate change | `+2.47%` |
+| Cumulative exact rate | `23.796 s/image` |
+| Projected remaining compute | approximately `6.01 hours` |
+| Projected total compute | approximately `7.93 hours` |
+| Linear artifact projection | approximately `5.98 GiB` |
 | Free storage after checkpoint | approximately `15 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
@@ -105,32 +116,32 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains all candle and capsule anomalies plus the first 61
+The checkpoint now contains all candle and capsule anomalies plus the first 91
 cashew anomalies:
 
 ```text
 candle: 100
 capsules: 100
-cashew: 61
+cashew: 91
 
-needs_review: 232
-soft_mask_only: 29
+needs_review: 259
+soft_mask_only: 32
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 261 rows:
+Selected proposal modes over all 291 rows:
 
 ```text
-fused_q975: 119
-fused_q950: 46
-fused_q900: 30
-fused_q950_component_1: 21
+fused_q975: 121
+fused_q950: 60
+fused_q900: 39
+fused_q950_component_1: 24
 fused_q975_component_1: 17
 fused_q900_component_1: 13
 fused_q850_component_1: 6
 fused_q850: 2
 edge_fused_q900_component_1_2: 2
-edge_fused_q850_component_1_1: 2
+edge_fused_q850_component_1_1: 4
 edge_fused_q900_component_1_1: 1
 edge_fused_q850_component_1_2: 1
 fused_q900_component_2: 1
@@ -193,6 +204,20 @@ Expected quality and non-review coverage improve, but source disagreement also
 worsens. This is evidence of heterogeneous cashew difficulty and selector
 confidence variation, not a mask-quality result.
 
+The following matched 30-row cashew slice reverses that confidence gain:
+
+```text
+mean expected IoU: 0.1723 versus 0.2112
+mean conformal IoU lower bound: 0.0370 versus 0.0758
+mean source disagreement: 0.6445 versus 0.7170
+Qwen full-image fallback: 8/30 versus 1/30
+soft_mask_only: 3/30 versus 9/30
+```
+
+Evidence providers agree more closely, but Qwen localization falls back much
+more often and selector confidence drops. This makes localization validity the
+strongest unscored explanation for the within-category shift.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -201,7 +226,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-e6e75864d85e3cb73dd8217efcf4047404f65f085cd6316f1f2e5de5fb96a300
+c89c5374239d18497bd0369460f395b89273e476990c609be3819133898b4cbe
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
