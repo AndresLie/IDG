@@ -372,18 +372,17 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Five bounded executions have completed
-`201/1,200` runtime images under the same run ID. The four resume operations
-reused `55`, `60`, `115`, and then `159` checkpoint rows without duplication.
-Exact cumulative throughput is `19.748 s/image`, projecting about `5.48`
-additional hours and a `5.28 GiB` final run footprint. The checkpoint contains
-all 100 candle and capsule anomalies plus the first cashew row, with 186
-`needs_review` and 15 `soft_mask_only` decisions. Relative to the preceding 44
-capsule rows, the final 41 capsule rows improve mean expected IoU from `0.1289`
-to `0.1432`, reduce source disagreement from `0.6436` to `0.6183`, and reduce
-Qwen full-image fallback from `27.3%` to `17.1%`. This remains an unscored
-confidence-transfer warning, not a quality result, and no official masks have
-been opened.
+The full frozen run has now begun. Six bounded executions have completed
+`231/1,200` runtime images under the same run ID. The five resume operations
+reused `55`, `60`, `115`, `159`, and then `201` checkpoint rows without
+duplication. Exact cumulative throughput is `21.433 s/image`, projecting about
+`5.77` additional hours and a `5.57 GiB` final run footprint. The checkpoint
+contains all 100 candle and capsule anomalies plus 31 cashew rows, with 211
+`needs_review` and 20 `soft_mask_only` decisions. The first 30-row cashew slice
+has higher expected IoU (`0.1862`) and only two Qwen full-image fallbacks, but
+source disagreement remains high (`0.6626`) and 25 rows still need review. This
+remains an unscored confidence-transfer warning, not a quality result, and no
+official masks have been opened.
 
 The fifth interruption also exposed a bounded production weakness: PNG role
 artifacts are written directly rather than atomically. One corrupt file was
@@ -393,7 +392,7 @@ and no checkpoint row was affected. Do not change this during the frozen run;
 add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 5.48-hour remaining VisA inference, run the
+and complete the approximately 5.77-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 

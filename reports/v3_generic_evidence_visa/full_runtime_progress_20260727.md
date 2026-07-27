@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 201
-progress: 16.75%
+runtime samples completed: 231
+progress: 19.25%
 ```
 
 ## Resume Validation
@@ -52,6 +52,14 @@ A fifth bounded command:
   during a file write; all artifacts for that incomplete sample were removed,
   while all 201 checkpoint rows remained intact.
 
+A sixth bounded command:
+
+- reused all 201 checkpoint rows and incremented `resume_count` to 5;
+- added 30 cashew rows;
+- stopped at 231 unique records;
+- interrupted during Qwen inference, leaving no partial image artifact;
+- preserved all checkpoint-local masks and readable retained PNGs.
+
 Current checkpoint:
 
 ```text
@@ -66,51 +74,53 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `201 / 1,200` |
-| Current run artifacts | `905.2 MiB` |
+| Completed rows | `231 / 1,200` |
+| Current run artifacts | `1,098.7 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
 | Fourth-vs-third segment rate change | `+23.24%` |
 | Fifth-segment rate, 42 rows | `23.014 s/image` |
 | Fifth-vs-fourth segment rate change | `+5.50%` |
-| Cumulative exact rate | `19.748 s/image` |
-| Projected remaining compute | approximately `5.48 hours` |
-| Projected total compute | approximately `6.58 hours` |
-| Linear artifact projection | approximately `5.28 GiB` |
-| Free storage after checkpoint | approximately `16 GiB` |
+| Sixth-segment rate, 30 cashew rows | `32.720 s/image` |
+| Sixth-vs-fifth segment rate change | `+42.17%` |
+| Cumulative exact rate | `21.433 s/image` |
+| Projected remaining compute | approximately `5.77 hours` |
+| Projected total compute | approximately `7.14 hours` |
+| Linear artifact projection | approximately `5.57 GiB` |
+| Free storage after checkpoint | approximately `15 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
 change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains all candle and capsule anomalies plus the first
-cashew anomaly:
+The checkpoint now contains all candle and capsule anomalies plus the first 31
+cashew anomalies:
 
 ```text
 candle: 100
 capsules: 100
-cashew: 1
+cashew: 31
 
-needs_review: 186
-soft_mask_only: 15
+needs_review: 211
+soft_mask_only: 20
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 201 rows:
+Selected proposal modes over all 231 rows:
 
 ```text
-fused_q975: 111
-fused_q950: 29
-fused_q900: 15
-fused_q950_component_1: 14
-fused_q975_component_1: 14
-fused_q900_component_1: 9
-fused_q850_component_1: 4
+fused_q975: 114
+fused_q950: 40
+fused_q900: 21
+fused_q950_component_1: 16
+fused_q975_component_1: 15
+fused_q900_component_1: 13
+fused_q850_component_1: 5
 fused_q850: 2
-edge_fused_q900_component_1_2: 1
-edge_fused_q850_component_1_1: 1
+edge_fused_q900_component_1_2: 2
+edge_fused_q850_component_1_1: 2
 edge_fused_q900_component_1_1: 1
 ```
 
@@ -142,6 +152,21 @@ disagreement falls from `0.6436` to `0.6183`, and Qwen full-image fallback
 falls from `27.3%` to `17.1%`. Despite those directional improvements, 36 of 41
 rows remain `needs_review`.
 
+The first 30-row cashew segment is more expensive and more optimistic:
+
+```text
+mean expected IoU: 0.1862
+mean conformal IoU lower bound: 0.0507
+mean source disagreement: 0.6626
+Qwen valid localization: 28/30
+needs_review: 25/30
+soft_mask_only: 5/30
+```
+
+The higher expected quality does not produce a reliable acceptance rate because
+source disagreement remains high. All 30 cashew rows are labeled `ring_sector`;
+specialists remain disabled.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -150,7 +175,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-b0da2fbbc8bc18a54095a31b3f36bd59d146b5a82aa91497cc89c1e00e29b21f
+d09d2b83f6683c65a8e42c82e1094b52e56491a022a8b633f2c06e0b2eb31766
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
