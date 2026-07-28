@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 696
-progress: 58.00%
+runtime samples completed: 745
+progress: 62.08%
 ```
 
 ## Resume Validation
@@ -164,6 +164,16 @@ An eighteenth bounded command:
 - removed the single uncheckpointed fused-evidence artifact for that sample;
 - preserved the run ID, both frozen fingerprints, and every durable mask role.
 
+A nineteenth bounded command:
+
+- resumed all 696 checkpoint rows and incremented `resume_count` to 18;
+- completed the final four macaroni2 rows and entered pcb1;
+- added 45 pcb1 rows and stopped at 745 unique records;
+- was interrupted during Qwen inference for pcb1 `045`;
+- left no uncheckpointed mask or image artifact;
+- preserved the same run ID, frozen fingerprints, and sealed reference
+  boundary.
+
 Current checkpoint:
 
 ```text
@@ -178,8 +188,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `696 / 1,200` |
-| Current run artifacts | `3,053.1 MiB` |
+| Completed rows | `745 / 1,200` |
+| Current run artifacts | `3,296.1 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -210,10 +220,12 @@ incomplete locked run.
 | Sixteenth-vs-fifteenth segment rate change | `-19.00%` |
 | Latest productive rate, 41 macaroni2 rows | `21.907 s/image` |
 | Latest-vs-previous productive rate change | `+4.94%` |
-| Cumulative productive rate | `22.162 s/image` |
-| Projected remaining compute | approximately `3.10 hours` |
-| Projected total compute | approximately `7.39 hours` |
-| Linear artifact projection | approximately `5.14 GiB` |
+| Nineteenth-segment rate, 49 transition rows | `18.334 s/image` |
+| Nineteenth-vs-eighteenth segment rate change | `-16.31%` |
+| Cumulative productive rate | `21.910 s/image` |
+| Projected remaining compute | approximately `2.77 hours` |
+| Projected total compute | approximately `7.30 hours` |
+| Linear artifact projection | approximately `5.18 GiB` |
 | Free storage after checkpoint | approximately `13 GiB` |
 
 The zero-row restricted-sandbox attempt is excluded from productive throughput.
@@ -222,8 +234,8 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains six complete categories plus the first 96
-macaroni2 anomalies:
+The checkpoint now contains seven complete categories plus the first 45 pcb1
+anomalies:
 
 ```text
 candle: 100
@@ -232,35 +244,36 @@ cashew: 100
 chewinggum: 100
 fryum: 100
 macaroni1: 100
-macaroni2: 96
+macaroni2: 100
+pcb1: 45
 
-needs_review: 474
-soft_mask_only: 222
+needs_review: 490
+soft_mask_only: 255
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 696 rows:
+Selected proposal modes over all 745 rows:
 
 ```text
 fused_q975: 189
-fused_q950: 176
-fused_q900: 60
+fused_q950: 177
+fused_q900: 61
 fused_q950_component_1: 40
 fused_q975_component_1: 18
-fused_q900_component_1: 34
-fused_q850_component_1: 47
-fused_q850: 13
+fused_q900_component_1: 37
+fused_q850_component_1: 55
+fused_q850: 15
 sam2_fused_q850_1: 48
-edge_fused_q900_component_1_2: 10
-edge_fused_q850_component_1_1: 19
-edge_fused_q900_component_1_1: 3
-edge_fused_q850_component_1_2: 7
-fused_q900_component_2: 9
-edge_fused_q850_1: 5
-edge_fused_q850_2: 7
-edge_fused_q900_1: 4
-edge_fused_q900_2: 3
-fused_q850_component_2: 1
+edge_fused_q900_component_1_2: 11
+edge_fused_q850_component_1_1: 21
+edge_fused_q900_component_1_1: 4
+edge_fused_q850_component_1_2: 13
+fused_q900_component_2: 11
+edge_fused_q850_1: 10
+edge_fused_q850_2: 11
+edge_fused_q900_1: 7
+edge_fused_q900_2: 8
+fused_q850_component_2: 6
 edge_fused_q900_component_2_2: 1
 fused_q900_component_3: 1
 edge_fused_q850_component_2_1: 1
@@ -558,6 +571,44 @@ this slice. Evidence agreement and selector calibration remain the more likely
 confidence bottlenecks. This is an unscored diagnostic, not a mask-quality
 conclusion.
 
+The final four macaroni2 rows do not change the category diagnosis:
+
+```text
+soft_mask_only: 1/4
+needs_review: 3/4
+mean expected IoU: 0.2135
+mean conformal IoU lower bound: 0.0780
+mean source disagreement: 0.4313
+Qwen valid localization: 4/4
+structure profile: repeated_chain 2, ring_sector 2
+```
+
+Completed macaroni2 contains 31 `soft_mask_only` and 69 `needs_review`
+decisions. Its mean expected IoU is `0.2173`, mean lower bound is `0.0818`,
+and mean disagreement is `0.4108`. Its structure remains balanced at 53
+`repeated_chain` and 47 `ring_sector`.
+
+The first 45 pcb1 rows enter a distinctly more permissive confidence regime:
+
+```text
+soft_mask_only: 32/45
+needs_review: 13/45
+mean expected IoU: 0.2432
+mean conformal IoU lower bound: 0.1077
+mean source disagreement: 0.5863
+mean selected-mask area: 0.0897
+Qwen valid localization: 37/45
+Qwen full-image fallback: 8/45
+structure profile: ring_sector 45/45
+```
+
+The acceptance increase is promising, but it is not yet a quality result.
+Pcb1 also has larger masks, higher evidence disagreement, and a completely
+collapsed structure profile. Structural specialists are disabled, so the
+profile does not alter frozen inference, but locked evaluation must determine
+whether the selector is capturing PCB defects or over-accepting broad anomaly
+regions.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -566,7 +617,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-2306feb061a6b6064de274be919dbe65b54884bb8e26c68f87fd4f756a178250
+232be70a0e42240fc93fd9f4f4cd6dc0afc9b3208fb95c1897ffada7c6b7ed34
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
