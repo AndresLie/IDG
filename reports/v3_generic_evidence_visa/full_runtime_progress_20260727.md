@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 506
-progress: 42.17%
+runtime samples completed: 540
+progress: 45.00%
 ```
 
 ## Resume Validation
@@ -109,6 +109,14 @@ A twelfth bounded command:
 - removed the single uncheckpointed fused-evidence image for macaroni1 `006`;
 - preserved all durable checkpoint artifacts without corruption.
 
+A thirteenth bounded command:
+
+- reused all 506 checkpoint rows and incremented `resume_count` to 12;
+- added the next 34 macaroni1 rows;
+- stopped at 540 unique records during proposal construction;
+- removed the single uncheckpointed fused-evidence image for macaroni1 `040`;
+- preserved every durable checkpoint row and mask-role artifact.
+
 Current checkpoint:
 
 ```text
@@ -123,8 +131,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `506 / 1,200` |
-| Current run artifacts | `2,257.4 MiB` |
+| Completed rows | `540 / 1,200` |
+| Current run artifacts | `2,418.2 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -145,10 +153,12 @@ incomplete locked run.
 | Eleventh-vs-tenth segment rate change | `+20.47%` |
 | Twelfth-segment rate, 43 transition rows | `21.451 s/image` |
 | Twelfth-vs-eleventh segment rate change | `+4.78%` |
-| Cumulative exact rate | `21.413 s/image` |
-| Projected remaining compute | approximately `4.13 hours` |
-| Projected total compute | approximately `7.14 hours` |
-| Linear artifact projection | approximately `5.23 GiB` |
+| Thirteenth-segment rate, 34 macaroni1 rows | `27.258 s/image` |
+| Thirteenth-vs-twelfth segment rate change | `+27.07%` |
+| Cumulative exact rate | `21.781 s/image` |
+| Projected remaining compute | approximately `3.99 hours` |
+| Projected total compute | approximately `7.26 hours` |
+| Linear artifact projection | approximately `5.25 GiB` |
 | Free storage after checkpoint | approximately `14 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
@@ -156,7 +166,7 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains five complete categories plus the first six
+The checkpoint now contains five complete categories plus the first 40
 macaroni1 anomalies:
 
 ```text
@@ -165,19 +175,19 @@ capsules: 100
 cashew: 100
 chewinggum: 100
 fryum: 100
-macaroni1: 6
+macaroni1: 40
 
-needs_review: 329
-soft_mask_only: 177
+needs_review: 358
+soft_mask_only: 182
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 506 rows:
+Selected proposal modes over all 540 rows:
 
 ```text
-fused_q975: 137
-fused_q950: 83
-fused_q900: 50
+fused_q975: 141
+fused_q950: 111
+fused_q900: 52
 fused_q950_component_1: 36
 fused_q975_component_1: 18
 fused_q900_component_1: 24
@@ -371,6 +381,27 @@ structure profile: ring_sector 6/6
 
 This sample is too small for a category conclusion.
 
+The next 34 macaroni1 rows establish a weaker confidence-transfer regime:
+
+```text
+soft_mask_only: 5/34 versus 2/6
+needs_review: 29/34 versus 4/6
+mean expected IoU: 0.2206 versus 0.2351
+mean conformal IoU lower bound: 0.0851 versus 0.0996
+mean source disagreement: 0.4743 versus 0.3954
+mean selected-mask area: 0.0460 versus 0.0351
+Qwen full-image fallback: 17/34 versus 0/6
+structure profile: ring_sector 34/34
+selected mode: fused_q950 28/34
+```
+
+Across the first 40 macaroni1 rows, only seven are `soft_mask_only`. The
+confidence decline coincides with both increased localization fallback and
+higher evidence disagreement, unlike fryum where the soft-prior path remained
+stable under fallback. Selection also concentrates strongly on one fused
+quantile. These are warnings about external confidence transfer and candidate
+diversity, not official mask-quality measurements.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -379,7 +410,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-334e91ce27962de921789e152ac694e4a553827090242a410f59bb0148400e20
+9e244263b5623576cd16966ac17f36b5a4c72b966954f6518cc3b529d25f27d8
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
