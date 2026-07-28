@@ -372,18 +372,20 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Ten bounded executions have completed
-`415/1,200` runtime images under the same run ID. The nine resume operations
+The full frozen run has now begun. Eleven bounded executions have completed
+`463/1,200` runtime images under the same run ID. The ten resume operations
 reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, `291`, and then `355`
-checkpoint rows without duplication. Exact cumulative throughput is
-`21.518 s/image`, projecting about `4.69` additional hours and a `5.19 GiB`
+and `415` checkpoint rows without duplication. Exact cumulative throughput is
+`21.409 s/image`, projecting about `4.38` additional hours and a `5.21 GiB`
 final run footprint. The checkpoint contains complete candle, capsule, cashew,
-and chewing-gum categories plus 15 fryum rows, with 320 `needs_review` and 95
+and chewing-gum categories plus 63 fryum rows, with 322 `needs_review` and 141
 `soft_mask_only` decisions. Whole-category chewing-gum acceptance is `42/100`
-with SAM2 selected on 48 rows. The first 15 fryum rows are all
-`soft_mask_only`, have mean lower bound `0.1953`, lower disagreement `0.5184`,
-and all use the `repeated_chain` profile. This is the strongest external slice
-so far, but remains an unscored confidence-transfer result; no official masks
+with SAM2 selected on 48 rows. The next 48 fryum rows replicate the first
+15-row signal: 46 are `soft_mask_only`, mean lower bound remains `0.1984`,
+source disagreement improves slightly to `0.5004`, and all 48 use the
+`repeated_chain` profile. Qwen fallback rises from `1/15` to `13/48` without
+destroying selector confidence, which supports the soft-localization-prior
+design. This remains an unscored confidence-transfer result; no official masks
 have been opened.
 
 The fifth interruption also exposed a bounded production weakness: PNG role
@@ -394,7 +396,7 @@ and no checkpoint row was affected. Do not change this during the frozen run;
 add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 4.69-hour remaining VisA inference, run the
+and complete the approximately 4.38-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 

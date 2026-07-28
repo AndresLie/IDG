@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 415
-progress: 34.58%
+runtime samples completed: 463
+progress: 38.58%
 ```
 
 ## Resume Validation
@@ -93,6 +93,14 @@ A tenth bounded command:
 - stopped at 415 unique records during Qwen inference;
 - preserved all checkpoint artifacts without interruption residue.
 
+An eleventh bounded command:
+
+- reused all 415 checkpoint rows and incremented `resume_count` to 10;
+- added the next 48 fryum rows;
+- stopped at 463 unique records during evidence normalization;
+- preserved all checkpoint artifacts without corrupt or incomplete retained
+  images.
+
 Current checkpoint:
 
 ```text
@@ -107,8 +115,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `415 / 1,200` |
-| Current run artifacts | `1,837.5 MiB` |
+| Completed rows | `463 / 1,200` |
+| Current run artifacts | `2,058.1 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -125,10 +133,12 @@ incomplete locked run.
 | Ninth-vs-eighth segment rate change | `-53.74%` |
 | Tenth-segment rate, 60 transition rows | `16.993 s/image` |
 | Tenth-vs-ninth segment rate change | `+10.34%` |
-| Cumulative exact rate | `21.518 s/image` |
-| Projected remaining compute | approximately `4.69 hours` |
-| Projected total compute | approximately `7.17 hours` |
-| Linear artifact projection | approximately `5.19 GiB` |
+| Eleventh-segment rate, 48 fryum rows | `20.471 s/image` |
+| Eleventh-vs-tenth segment rate change | `+20.47%` |
+| Cumulative exact rate | `21.409 s/image` |
+| Projected remaining compute | approximately `4.38 hours` |
+| Projected total compute | approximately `7.14 hours` |
+| Linear artifact projection | approximately `5.21 GiB` |
 | Free storage after checkpoint | approximately `14 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
@@ -136,7 +146,7 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains four complete categories plus the first 15 fryum
+The checkpoint now contains four complete categories plus the first 63 fryum
 anomalies:
 
 ```text
@@ -144,34 +154,34 @@ candle: 100
 capsules: 100
 cashew: 100
 chewinggum: 100
-fryum: 15
+fryum: 63
 
-needs_review: 320
-soft_mask_only: 95
+needs_review: 322
+soft_mask_only: 141
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 415 rows:
+Selected proposal modes over all 463 rows:
 
 ```text
-fused_q975: 124
-fused_q950: 63
-fused_q900: 49
-fused_q950_component_1: 29
-fused_q975_component_1: 17
-fused_q900_component_1: 21
-fused_q850_component_1: 21
+fused_q975: 130
+fused_q950: 73
+fused_q900: 50
+fused_q950_component_1: 30
+fused_q975_component_1: 18
+fused_q900_component_1: 22
+fused_q850_component_1: 37
 fused_q850: 13
 sam2_fused_q850_1: 48
-edge_fused_q900_component_1_2: 4
-edge_fused_q850_component_1_1: 5
+edge_fused_q900_component_1_2: 6
+edge_fused_q850_component_1_1: 8
 edge_fused_q900_component_1_1: 1
-edge_fused_q850_component_1_2: 4
+edge_fused_q850_component_1_2: 7
 fused_q900_component_2: 1
-edge_fused_q850_1: 3
-edge_fused_q850_2: 5
+edge_fused_q850_1: 5
+edge_fused_q850_2: 7
 edge_fused_q900_1: 4
-edge_fused_q900_2: 2
+edge_fused_q900_2: 3
 ```
 
 The latest segment's exact selector diagnostics are:
@@ -297,6 +307,25 @@ structure profile: repeated_chain 15/15
 This is the first category slice with complete soft-mask acceptance and a
 non-ring structure profile. It remains unverified until locked evaluation.
 
+The next 48 fryum rows replicate that confidence-transfer pattern:
+
+```text
+soft_mask_only: 46/48
+needs_review: 2/48
+mean expected IoU: 0.3339 versus 0.3307
+mean conformal IoU lower bound: 0.1984 versus 0.1953
+mean source disagreement: 0.5004 versus 0.5184
+mean selected-mask area: 0.0767 versus 0.0818
+Qwen full-image fallback: 13/48 versus 1/15
+structure profile: repeated_chain 48/48
+```
+
+The persistent confidence despite substantially more Qwen fallbacks supports
+the architectural choice to treat localization as a soft prior: generic
+evidence can preserve a coherent decision when localization weakens. This is
+still an unscored diagnostic, not evidence that the masks overlap official
+defects.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -305,7 +334,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-0b6d8b3d7e5328440fe79338013bf985177e3e661e8156a2ca827264b877b3fc
+7833fd7e7db57abead85ca87ced34f3d41fea4e9865a5430326a1a4d2f0a757e
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
