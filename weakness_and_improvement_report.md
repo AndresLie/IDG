@@ -372,21 +372,21 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Eleven bounded executions have completed
-`463/1,200` runtime images under the same run ID. The ten resume operations
+The full frozen run has now begun. Twelve bounded executions have completed
+`506/1,200` runtime images under the same run ID. The eleven resume operations
 reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, `291`, and then `355`
-and `415` checkpoint rows without duplication. Exact cumulative throughput is
-`21.409 s/image`, projecting about `4.38` additional hours and a `5.21 GiB`
-final run footprint. The checkpoint contains complete candle, capsule, cashew,
-and chewing-gum categories plus 63 fryum rows, with 322 `needs_review` and 141
-`soft_mask_only` decisions. Whole-category chewing-gum acceptance is `42/100`
-with SAM2 selected on 48 rows. The next 48 fryum rows replicate the first
-15-row signal: 46 are `soft_mask_only`, mean lower bound remains `0.1984`,
-source disagreement improves slightly to `0.5004`, and all 48 use the
-`repeated_chain` profile. Qwen fallback rises from `1/15` to `13/48` without
-destroying selector confidence, which supports the soft-localization-prior
-design. This remains an unscored confidence-transfer result; no official masks
-have been opened.
+and `415`, then `463` checkpoint rows without duplication. Exact cumulative
+throughput is `21.413 s/image`, projecting about `4.13` additional hours and a
+`5.23 GiB` final run footprint. The checkpoint contains complete candle,
+capsule, cashew, chewing-gum, and fryum categories plus six macaroni1 rows, with
+329 `needs_review` and 177 `soft_mask_only` decisions. Whole-category
+chewing-gum acceptance is `42/100`
+with SAM2 selected on 48 rows. Completed fryum acceptance is `95/100`, and all
+100 rows use the `repeated_chain` profile. Its final 37 rows are more
+conservative than the first 63: mean lower bound falls from `0.1976` to
+`0.1614` and mean selected-mask area from `0.0779` to `0.0510`, despite fewer
+Qwen fallbacks and slightly lower disagreement. This is useful heterogeneity
+evidence, not a mask-quality result; no official masks have been opened.
 
 The fifth interruption also exposed a bounded production weakness: PNG role
 artifacts are written directly rather than atomically. One corrupt file was
@@ -396,7 +396,7 @@ and no checkpoint row was affected. Do not change this during the frozen run;
 add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 4.38-hour remaining VisA inference, run the
+and complete the approximately 4.13-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 

@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 463
-progress: 38.58%
+runtime samples completed: 506
+progress: 42.17%
 ```
 
 ## Resume Validation
@@ -101,6 +101,14 @@ An eleventh bounded command:
 - preserved all checkpoint artifacts without corrupt or incomplete retained
   images.
 
+A twelfth bounded command:
+
+- reused all 463 checkpoint rows and incremented `resume_count` to 11;
+- completed the final 37 fryum rows and added the first six macaroni1 rows;
+- stopped at 506 unique records during proposal construction;
+- removed the single uncheckpointed fused-evidence image for macaroni1 `006`;
+- preserved all durable checkpoint artifacts without corruption.
+
 Current checkpoint:
 
 ```text
@@ -115,8 +123,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `463 / 1,200` |
-| Current run artifacts | `2,058.1 MiB` |
+| Completed rows | `506 / 1,200` |
+| Current run artifacts | `2,257.4 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -135,10 +143,12 @@ incomplete locked run.
 | Tenth-vs-ninth segment rate change | `+10.34%` |
 | Eleventh-segment rate, 48 fryum rows | `20.471 s/image` |
 | Eleventh-vs-tenth segment rate change | `+20.47%` |
-| Cumulative exact rate | `21.409 s/image` |
-| Projected remaining compute | approximately `4.38 hours` |
+| Twelfth-segment rate, 43 transition rows | `21.451 s/image` |
+| Twelfth-vs-eleventh segment rate change | `+4.78%` |
+| Cumulative exact rate | `21.413 s/image` |
+| Projected remaining compute | approximately `4.13 hours` |
 | Projected total compute | approximately `7.14 hours` |
-| Linear artifact projection | approximately `5.21 GiB` |
+| Linear artifact projection | approximately `5.23 GiB` |
 | Free storage after checkpoint | approximately `14 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
@@ -146,42 +156,44 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains four complete categories plus the first 63 fryum
-anomalies:
+The checkpoint now contains five complete categories plus the first six
+macaroni1 anomalies:
 
 ```text
 candle: 100
 capsules: 100
 cashew: 100
 chewinggum: 100
-fryum: 63
+fryum: 100
+macaroni1: 6
 
-needs_review: 322
-soft_mask_only: 141
+needs_review: 329
+soft_mask_only: 177
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 463 rows:
+Selected proposal modes over all 506 rows:
 
 ```text
-fused_q975: 130
-fused_q950: 73
+fused_q975: 137
+fused_q950: 83
 fused_q900: 50
-fused_q950_component_1: 30
+fused_q950_component_1: 36
 fused_q975_component_1: 18
-fused_q900_component_1: 22
-fused_q850_component_1: 37
+fused_q900_component_1: 24
+fused_q850_component_1: 47
 fused_q850: 13
 sam2_fused_q850_1: 48
-edge_fused_q900_component_1_2: 6
-edge_fused_q850_component_1_1: 8
-edge_fused_q900_component_1_1: 1
+edge_fused_q900_component_1_2: 8
+edge_fused_q850_component_1_1: 10
+edge_fused_q900_component_1_1: 2
 edge_fused_q850_component_1_2: 7
-fused_q900_component_2: 1
+fused_q900_component_2: 3
 edge_fused_q850_1: 5
 edge_fused_q850_2: 7
 edge_fused_q900_1: 4
 edge_fused_q900_2: 3
+fused_q850_component_2: 1
 ```
 
 The latest segment's exact selector diagnostics are:
@@ -326,6 +338,39 @@ evidence can preserve a coherent decision when localization weakens. This is
 still an unscored diagnostic, not evidence that the masks overlap official
 defects.
 
+The final 37 fryum rows are more conservative than the first 63:
+
+```text
+soft_mask_only: 34/37 versus 61/63
+mean expected IoU: 0.2969 versus 0.3331
+mean conformal IoU lower bound: 0.1614 versus 0.1976
+mean source disagreement: 0.4883 versus 0.5047
+mean selected-mask area: 0.0510 versus 0.0779
+Qwen full-image fallback: 2/37 versus 14/63
+structure profile: repeated_chain 37/37
+```
+
+The completed fryum category therefore contains 95 `soft_mask_only` and five
+`needs_review` decisions. Confidence and mask area drift downward in the final
+slice despite better localization and slightly lower source disagreement. That
+pattern points to image-content variation rather than Qwen failure, but only
+locked evaluation can establish whether the smaller masks are more precise or
+under-segmented.
+
+The first six macaroni1 rows are preliminary:
+
+```text
+soft_mask_only: 2/6
+needs_review: 4/6
+mean expected IoU: 0.2351
+mean conformal IoU lower bound: 0.0996
+mean source disagreement: 0.3954
+Qwen valid localization: 6/6
+structure profile: ring_sector 6/6
+```
+
+This sample is too small for a category conclusion.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -334,7 +379,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-7833fd7e7db57abead85ca87ced34f3d41fea4e9865a5430326a1a4d2f0a757e
+334e91ce27962de921789e152ac694e4a553827090242a410f59bb0148400e20
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
