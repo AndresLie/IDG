@@ -372,15 +372,18 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Sixteen bounded executions have completed
-`655/1,200` runtime images under the same run ID. The fifteen resume operations
+The full frozen run has now begun. Eighteen bounded inference executions have
+completed `696/1,200` runtime images under the same run ID. The seventeen
+resume operations
 reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, `291`, and then `355`
 and `415`, then `463`, `506`, `540`, and `575` checkpoint rows without
-duplication, followed by `611`. Exact cumulative throughput is
-`22.178 s/image`, projecting about `3.36` additional hours and a `5.20 GiB`
-final run footprint. The checkpoint contains complete candle, capsule, cashew,
-chewing-gum, fryum, and macaroni1 categories plus 55 macaroni2 rows, with 444
-`needs_review` and 211 `soft_mask_only` decisions. Whole-category chewing-gum
+duplication, followed by `611`, then `655` twice: one zero-row
+environment-isolation attempt and one productive resume. Exact productive
+throughput is `22.162 s/image`, projecting about `3.10` additional hours and a
+`5.14 GiB` final run footprint. The checkpoint contains complete candle,
+capsule, cashew, chewing-gum, fryum, and macaroni1 categories plus 96 macaroni2
+rows, with 474 `needs_review` and 222 `soft_mask_only` decisions.
+Whole-category chewing-gum
 acceptance is `42/100`
 with SAM2 selected on 48 rows. Completed fryum acceptance is `95/100`, and all
 100 rows use the `repeated_chain` profile. Its final 37 rows are more
@@ -396,11 +399,13 @@ and disagreement improve and the selected-mode mix broadens. This weakens a
 localization-only explanation and preregisters candidate oracle gap and
 selector calibration as decisive locked analyses.
 
-The first 55 macaroni2 rows are a healthier counterexample: 19 are
-`soft_mask_only`, source disagreement falls to `0.3979`, the structural split
-is nearly even between `repeated_chain` and `ring_sector`, and no proposal mode
-exceeds 17 selections. This shows the generic path remains expressive outside
-macaroni1, while leaving quality and regret for locked evaluation.
+The first 96 macaroni2 rows remain a healthier structural counterexample: 30
+are `soft_mask_only`, the structural split is 51 `repeated_chain` to 45
+`ring_sector`, and no proposal mode exceeds 29 selections. The latest 41-row
+slice has valid Qwen localization on every image, but source disagreement rises
+from `0.3732` to `0.4261` and soft-mask coverage falls from `16/44` to `11/41`.
+This separates the current confidence weakness from localization fallback:
+evidence agreement and selector transfer remain the decisive locked analyses.
 
 The fifth interruption also exposed a bounded production weakness: PNG role
 artifacts are written directly rather than atomically. One corrupt file was
@@ -410,7 +415,7 @@ and no checkpoint row was affected. Do not change this during the frozen run;
 add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 3.36-hour remaining VisA inference, run the
+and complete the approximately 3.10-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 
@@ -952,7 +957,7 @@ post-confirmation ablations, not automatic implementation tasks.
 | **R3** | Locked-category mask confirmation | ✅ Primary confirmation complete | 839 images, 29,584 candidates. Locked macro Dice `0.3171`; oracle `0.5615`. Real-widened selector beats synthetic selector `+0.0952`, CI `[+0.0450,+0.1440]`; full release targets fail. | Selector contribution confirmed; architecture release rejected. No tuning on exposed categories. |
 | **R4** | Visibility critic validity + generation re-audit | 🟡 Automated gate passed; independent gate pending | Global retry and mask-local crop rejected. Fixed adapter negligible. Text/clone critic arbitration: visibility `+0.0289 [0.0110,0.0487]`, coverage `+0.1300`, leakage `-0.0022`, acceptance `10/18→14/18`. | Keep rejected mechanisms default-off. Do not promote arbitration until two blind reviewers and independent downstream evaluation agree. |
 | **R5** | Independent synthetic-utility ablation | ✅ Complete; promotion gate failed | Fusion-free ResNet18 U-Net, paired seeds, 120 matched steps, five seeds, fixed ratio, and hierarchical bootstrap. Historical pixel AP was `-0.0200` then `-0.0066`; strict deterministic replay reproduces `15/15` artifacts, and the full deterministic estimate is `-0.0015 [-0.0414,+0.0403]`. | Null confirmed under deterministic execution. Do not promote the synthetic corpus or run locked R5. |
-| **R6** | External baselines + paper package | 🟡 VisA runtime `655/1,200`; quantitative external result pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. The exact frozen RC has completed 54.58% of VisA inference under one stable run identity: six categories are complete and 55 macaroni2 rows are checkpointed. Official masks remain sealed, and no runtime diagnostics have reopened tuning. SubspaceAD and MVTec AD 2 remain blocked. | Complete frozen VisA inference, then perform the one-shot locked evaluation without reopening tuning. |
+| **R6** | External baselines + paper package | 🟡 VisA runtime `696/1,200`; quantitative external result pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. The exact frozen RC has completed 58.00% of VisA inference under one stable run identity: six categories are complete and 96 macaroni2 rows are checkpointed. Official masks remain sealed, and no runtime diagnostics have reopened tuning. SubspaceAD and MVTec AD 2 remain blocked. | Complete frozen VisA inference, then perform the one-shot locked evaluation without reopening tuning. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly
 
