@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 540
-progress: 45.00%
+runtime samples completed: 575
+progress: 47.92%
 ```
 
 ## Resume Validation
@@ -117,6 +117,14 @@ A thirteenth bounded command:
 - removed the single uncheckpointed fused-evidence image for macaroni1 `040`;
 - preserved every durable checkpoint row and mask-role artifact.
 
+A fourteenth bounded command:
+
+- reused all 540 checkpoint rows and incremented `resume_count` to 13;
+- added another 35 macaroni1 rows;
+- stopped at 575 unique records during Qwen inference;
+- left no uncheckpointed image artifact;
+- preserved the frozen fingerprints and all durable checkpoint outputs.
+
 Current checkpoint:
 
 ```text
@@ -131,8 +139,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `540 / 1,200` |
-| Current run artifacts | `2,418.2 MiB` |
+| Completed rows | `575 / 1,200` |
+| Current run artifacts | `2,583.2 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -155,10 +163,12 @@ incomplete locked run.
 | Twelfth-vs-eleventh segment rate change | `+4.78%` |
 | Thirteenth-segment rate, 34 macaroni1 rows | `27.258 s/image` |
 | Thirteenth-vs-twelfth segment rate change | `+27.07%` |
-| Cumulative exact rate | `21.781 s/image` |
-| Projected remaining compute | approximately `3.99 hours` |
-| Projected total compute | approximately `7.26 hours` |
-| Linear artifact projection | approximately `5.25 GiB` |
+| Fourteenth-segment rate, 35 macaroni1 rows | `26.240 s/image` |
+| Fourteenth-vs-thirteenth segment rate change | `-3.74%` |
+| Cumulative exact rate | `22.052 s/image` |
+| Projected remaining compute | approximately `3.83 hours` |
+| Projected total compute | approximately `7.35 hours` |
+| Linear artifact projection | approximately `5.26 GiB` |
 | Free storage after checkpoint | approximately `14 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
@@ -166,7 +176,7 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains five complete categories plus the first 40
+The checkpoint now contains five complete categories plus the first 75
 macaroni1 anomalies:
 
 ```text
@@ -175,18 +185,18 @@ capsules: 100
 cashew: 100
 chewinggum: 100
 fryum: 100
-macaroni1: 40
+macaroni1: 75
 
-needs_review: 358
-soft_mask_only: 182
+needs_review: 384
+soft_mask_only: 191
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 540 rows:
+Selected proposal modes over all 575 rows:
 
 ```text
-fused_q975: 141
-fused_q950: 111
+fused_q975: 149
+fused_q950: 137
 fused_q900: 52
 fused_q950_component_1: 36
 fused_q975_component_1: 18
@@ -196,7 +206,7 @@ fused_q850: 13
 sam2_fused_q850_1: 48
 edge_fused_q900_component_1_2: 8
 edge_fused_q850_component_1_1: 10
-edge_fused_q900_component_1_1: 2
+edge_fused_q900_component_1_1: 3
 edge_fused_q850_component_1_2: 7
 fused_q900_component_2: 3
 edge_fused_q850_1: 5
@@ -402,6 +412,27 @@ stable under fallback. Selection also concentrates strongly on one fused
 quantile. These are warnings about external confidence transfer and candidate
 diversity, not official mask-quality measurements.
 
+The next 35 macaroni1 rows confirm that the difficult regime is stable rather
+than progressively collapsing:
+
+```text
+soft_mask_only: 9/35 versus 5/34
+needs_review: 26/35 versus 29/34
+mean expected IoU: 0.2186 versus 0.2206
+mean conformal IoU lower bound: 0.0831 versus 0.0851
+mean source disagreement: 0.4585 versus 0.4743
+mean selected-mask area: 0.0401 versus 0.0460
+Qwen full-image fallback: 15/35 versus 17/34
+structure profile: ring_sector 35/35
+selected mode: fused_q950 26/35
+```
+
+Acceptance improves modestly and disagreement falls, while calibrated quality
+remains essentially flat. Across 75 macaroni1 rows, 59 are `needs_review`, 32
+use Qwen fallback, and 57 select `fused_q950`. This strengthens the
+preregistered need to inspect search-region recall and selector regret after
+the runtime cohort is sealed.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -410,7 +441,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-9e244263b5623576cd16966ac17f36b5a4c72b966954f6518cc3b529d25f27d8
+2cdf130f946e008c2fc6ab83cdcf857e1f4acf502ee4ce82acd3e88cddfeca2a
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23

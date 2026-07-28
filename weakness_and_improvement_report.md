@@ -372,14 +372,14 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Thirteen bounded executions have completed
-`540/1,200` runtime images under the same run ID. The twelve resume operations
+The full frozen run has now begun. Fourteen bounded executions have completed
+`575/1,200` runtime images under the same run ID. The thirteen resume operations
 reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, `291`, and then `355`
-and `415`, then `463` and `506` checkpoint rows without duplication. Exact
-cumulative throughput is `21.781 s/image`, projecting about `3.99` additional
-hours and a `5.25 GiB` final run footprint. The checkpoint contains complete
-candle, capsule, cashew, chewing-gum, and fryum categories plus 40 macaroni1
-rows, with 358 `needs_review` and 182 `soft_mask_only` decisions.
+and `415`, then `463`, `506`, and `540` checkpoint rows without duplication.
+Exact cumulative throughput is `22.052 s/image`, projecting about `3.83`
+additional hours and a `5.26 GiB` final run footprint. The checkpoint contains
+complete candle, capsule, cashew, chewing-gum, and fryum categories plus 75
+macaroni1 rows, with 384 `needs_review` and 191 `soft_mask_only` decisions.
 Whole-category chewing-gum acceptance is `42/100`
 with SAM2 selected on 48 rows. Completed fryum acceptance is `95/100`, and all
 100 rows use the `repeated_chain` profile. Its final 37 rows are more
@@ -388,12 +388,12 @@ conservative than the first 63: mean lower bound falls from `0.1976` to
 Qwen fallbacks and slightly lower disagreement. This is useful heterogeneity
 evidence, not a mask-quality result; no official masks have been opened.
 
-The first 40 macaroni1 rows form a weaker regime: only seven are
-`soft_mask_only`, 17 use Qwen full-image fallback, mean lower bound is `0.0873`,
-and 31 select `fused_q950`. The next 34 rows are both less confident and more
-concentrated than the initial six. This is a preregistered warning to inspect
-localization recall and selector regret after labels are unlocked, not a reason
-to tune the frozen run.
+The first 75 macaroni1 rows form a stable weaker regime: only 16 are
+`soft_mask_only`, 32 use Qwen full-image fallback, mean lower bound is `0.0854`,
+and 57 select `fused_q950`. The newest 35 rows modestly improve acceptance and
+disagreement without moving calibrated quality. This is a preregistered warning
+to inspect localization recall and selector regret after labels are unlocked,
+not a reason to tune the frozen run.
 
 The fifth interruption also exposed a bounded production weakness: PNG role
 artifacts are written directly rather than atomically. One corrupt file was
@@ -403,7 +403,7 @@ and no checkpoint row was affected. Do not change this during the frozen run;
 add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 3.99-hour remaining VisA inference, run the
+and complete the approximately 3.83-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 
