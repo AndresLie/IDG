@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 575
-progress: 47.92%
+runtime samples completed: 611
+progress: 50.92%
 ```
 
 ## Resume Validation
@@ -125,6 +125,14 @@ A fourteenth bounded command:
 - left no uncheckpointed image artifact;
 - preserved the frozen fingerprints and all durable checkpoint outputs.
 
+A fifteenth bounded command:
+
+- reused all 575 checkpoint rows and incremented `resume_count` to 14;
+- completed the final 25 macaroni1 rows and added the first 11 macaroni2 rows;
+- stopped at 611 unique records during proposal construction;
+- removed the single uncheckpointed fused-evidence image for macaroni2 `011`;
+- preserved all durable masks and the frozen execution identity.
+
 Current checkpoint:
 
 ```text
@@ -139,8 +147,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `575 / 1,200` |
-| Current run artifacts | `2,583.2 MiB` |
+| Completed rows | `611 / 1,200` |
+| Current run artifacts | `2,743.0 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -165,19 +173,21 @@ incomplete locked run.
 | Thirteenth-vs-twelfth segment rate change | `+27.07%` |
 | Fourteenth-segment rate, 35 macaroni1 rows | `26.240 s/image` |
 | Fourteenth-vs-thirteenth segment rate change | `-3.74%` |
-| Cumulative exact rate | `22.052 s/image` |
-| Projected remaining compute | approximately `3.83 hours` |
-| Projected total compute | approximately `7.35 hours` |
+| Fifteenth-segment rate, 36 transition rows | `25.774 s/image` |
+| Fifteenth-vs-fourteenth segment rate change | `-1.78%` |
+| Cumulative exact rate | `22.271 s/image` |
+| Projected remaining compute | approximately `3.64 hours` |
+| Projected total compute | approximately `7.42 hours` |
 | Linear artifact projection | approximately `5.26 GiB` |
-| Free storage after checkpoint | approximately `14 GiB` |
+| Free storage after checkpoint | approximately `13 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
 change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains five complete categories plus the first 75
-macaroni1 anomalies:
+The checkpoint now contains six complete categories plus the first 11
+macaroni2 anomalies:
 
 ```text
 candle: 100
@@ -185,27 +195,28 @@ capsules: 100
 cashew: 100
 chewinggum: 100
 fryum: 100
-macaroni1: 75
+macaroni1: 100
+macaroni2: 11
 
-needs_review: 384
-soft_mask_only: 191
+needs_review: 416
+soft_mask_only: 195
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 575 rows:
+Selected proposal modes over all 611 rows:
 
 ```text
-fused_q975: 149
-fused_q950: 137
-fused_q900: 52
+fused_q975: 161
+fused_q950: 155
+fused_q900: 54
 fused_q950_component_1: 36
 fused_q975_component_1: 18
-fused_q900_component_1: 24
+fused_q900_component_1: 26
 fused_q850_component_1: 47
 fused_q850: 13
 sam2_fused_q850_1: 48
 edge_fused_q900_component_1_2: 8
-edge_fused_q850_component_1_1: 10
+edge_fused_q850_component_1_1: 11
 edge_fused_q900_component_1_1: 3
 edge_fused_q850_component_1_2: 7
 fused_q900_component_2: 3
@@ -214,6 +225,7 @@ edge_fused_q850_2: 7
 edge_fused_q900_1: 4
 edge_fused_q900_2: 3
 fused_q850_component_2: 1
+edge_fused_q900_component_2_2: 1
 ```
 
 The latest segment's exact selector diagnostics are:
@@ -433,6 +445,41 @@ use Qwen fallback, and 57 select `fused_q950`. This strengthens the
 preregistered need to inspect search-region recall and selector regret after
 the runtime cohort is sealed.
 
+The final 25 macaroni1 rows are the weakest category slice:
+
+```text
+soft_mask_only: 1/25 versus 9/35
+needs_review: 24/25 versus 26/35
+mean expected IoU: 0.1954 versus 0.2186
+mean conformal IoU lower bound: 0.0599 versus 0.0831
+mean source disagreement: 0.4148 versus 0.4585
+mean selected-mask area: 0.0375 versus 0.0401
+Qwen full-image fallback: 4/25 versus 15/35
+structure profile: ring_sector 25/25
+selected modes: fused_q950 13, fused_q975 11, fused_q900 1
+```
+
+Macaroni1 completes with 17 `soft_mask_only` and 83 `needs_review` decisions.
+The final decline occurs despite better Qwen validity, lower disagreement, and
+a broader selected-mode mix, so localization fallback and q950 concentration
+cannot fully explain it. Locked evaluation must separate genuinely weak
+candidates from selector calibration error.
+
+The first 11 macaroni2 rows are preliminary:
+
+```text
+soft_mask_only: 3/11
+needs_review: 8/11
+mean expected IoU: 0.2198
+mean conformal IoU lower bound: 0.0843
+mean source disagreement: 0.4969
+Qwen full-image fallback: 4/11
+structure profile: repeated_chain 6, ring_sector 5
+```
+
+The mixed structural profile and broader selected modes differ from macaroni1,
+but 11 rows are insufficient for a category conclusion.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -441,7 +488,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-2cdf130f946e008c2fc6ab83cdcf857e1f4acf502ee4ce82acd3e88cddfeca2a
+aafd68970d5d4c0e56e12a1a2acd7bf47e5464a24b514ca18d9fa9ccd33f45ec
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
