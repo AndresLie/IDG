@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 355
-progress: 29.58%
+runtime samples completed: 415
+progress: 34.58%
 ```
 
 ## Resume Validation
@@ -85,6 +85,14 @@ A ninth bounded command:
 - stopped at 355 unique records during selector inference;
 - left no corrupt retained image or incomplete checkpoint row.
 
+A tenth bounded command:
+
+- reused all 355 checkpoint rows and incremented `resume_count` to 9;
+- completed the final 45 chewing-gum rows;
+- added the first 15 fryum rows;
+- stopped at 415 unique records during Qwen inference;
+- preserved all checkpoint artifacts without interruption residue.
+
 Current checkpoint:
 
 ```text
@@ -99,8 +107,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `355 / 1,200` |
-| Current run artifacts | `1,665.1 MiB` |
+| Completed rows | `415 / 1,200` |
+| Current run artifacts | `1,837.5 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -115,52 +123,55 @@ incomplete locked run.
 | Eighth-vs-seventh segment rate change | `+2.47%` |
 | Ninth-segment rate, 64 transition rows | `15.401 s/image` |
 | Ninth-vs-eighth segment rate change | `-53.74%` |
-| Cumulative exact rate | `22.282 s/image` |
-| Projected remaining compute | approximately `5.23 hours` |
-| Projected total compute | approximately `7.43 hours` |
-| Linear artifact projection | approximately `5.50 GiB` |
-| Free storage after checkpoint | approximately `15 GiB` |
+| Tenth-segment rate, 60 transition rows | `16.993 s/image` |
+| Tenth-vs-ninth segment rate change | `+10.34%` |
+| Cumulative exact rate | `21.518 s/image` |
+| Projected remaining compute | approximately `4.69 hours` |
+| Projected total compute | approximately `7.17 hours` |
+| Linear artifact projection | approximately `5.19 GiB` |
+| Free storage after checkpoint | approximately `14 GiB` |
 
 The projection is operational only. Category transitions and cache reuse may
 change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains three complete categories plus the first 55
-chewing-gum anomalies:
+The checkpoint now contains four complete categories plus the first 15 fryum
+anomalies:
 
 ```text
 candle: 100
 capsules: 100
 cashew: 100
-chewinggum: 55
+chewinggum: 100
+fryum: 15
 
-needs_review: 288
-soft_mask_only: 67
+needs_review: 320
+soft_mask_only: 95
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 355 rows:
+Selected proposal modes over all 415 rows:
 
 ```text
-fused_q975: 122
-fused_q950: 61
-fused_q900: 46
-fused_q950_component_1: 28
+fused_q975: 124
+fused_q950: 63
+fused_q900: 49
+fused_q950_component_1: 29
 fused_q975_component_1: 17
-fused_q900_component_1: 16
-fused_q850_component_1: 10
-fused_q850: 7
-sam2_fused_q850_1: 29
-edge_fused_q900_component_1_2: 3
+fused_q900_component_1: 21
+fused_q850_component_1: 21
+fused_q850: 13
+sam2_fused_q850_1: 48
+edge_fused_q900_component_1_2: 4
 edge_fused_q850_component_1_1: 5
 edge_fused_q900_component_1_1: 1
-edge_fused_q850_component_1_2: 2
+edge_fused_q850_component_1_2: 4
 fused_q900_component_2: 1
-edge_fused_q850_1: 2
-edge_fused_q850_2: 3
-edge_fused_q900_1: 1
-edge_fused_q900_2: 1
+edge_fused_q850_1: 3
+edge_fused_q850_2: 5
+edge_fused_q900_1: 4
+edge_fused_q900_2: 2
 ```
 
 The latest segment's exact selector diagnostics are:
@@ -259,6 +270,33 @@ The acceptance increase coincides with valid localization and SAM2 selection,
 but source disagreement is extremely high. Only locked labels can determine
 whether SAM2 is resolving useful boundaries or publishing overconfident masks.
 
+The remaining 45 chewing-gum rows are harder:
+
+```text
+mean expected IoU: 0.1990 versus 0.2415
+mean conformal IoU lower bound: 0.0697 versus 0.1117
+mean source disagreement: 0.8815 versus 0.8225
+soft_mask_only: 13/45 versus 29/55
+SAM2-selected proposal: 19/45
+```
+
+Across all 100 chewing-gum rows, 42 are `soft_mask_only` and 48 select SAM2.
+SAM2 selection therefore does not determine acceptance by itself.
+
+The first 15 fryum rows are substantially stronger:
+
+```text
+mean expected IoU: 0.3307
+mean conformal IoU lower bound: 0.1953
+mean source disagreement: 0.5184
+Qwen valid localization: 14/15
+soft_mask_only: 15/15
+structure profile: repeated_chain 15/15
+```
+
+This is the first category slice with complete soft-mask acceptance and a
+non-ring structure profile. It remains unverified until locked evaluation.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -267,7 +305,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-5ae0cdca75e4208ce2bc45aeaa41a7b290b406386d3d7eb8c6bae90f6fa0805d
+0b6d8b3d7e5328440fe79338013bf985177e3e661e8156a2ca827264b877b3fc
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
