@@ -372,18 +372,18 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Twenty-two bounded inference executions have
-completed `878/1,200` runtime images under the same run ID. The twenty-one
+The full frozen run has now begun. Twenty-three bounded inference executions have
+completed `925/1,200` runtime images under the same run ID. The twenty-two
 resume operations
 reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, `291`, and then `355`
 and `415`, then `463`, `506`, `540`, and `575` checkpoint rows without
 duplication, followed by `611`, then `655` twice: one zero-row
 environment-isolation attempt and one productive resume, followed by `696`,
-`745`, `791`, and `833`. Exact productive throughput is `21.656 s/image`,
-projecting about `1.94` additional hours and a `5.32 GiB` final run footprint. The
+`745`, `791`, `833`, and `878`. Exact productive throughput is `21.527 s/image`,
+projecting about `1.64` additional hours and a `5.31 GiB` final run footprint. The
 checkpoint contains complete candle, capsule, cashew, chewing-gum, fryum,
-macaroni1, macaroni2, and pcb1 categories plus 78 pcb2 rows, with 552
-`needs_review` and 326 `soft_mask_only` decisions. Whole-category chewing-gum
+macaroni1, macaroni2, pcb1, and pcb2 categories plus 25 pcb3 rows, with 562
+`needs_review` and 363 `soft_mask_only` decisions. Whole-category chewing-gum
 acceptance is `42/100`
 with SAM2 selected on 48 rows. Completed fryum acceptance is `95/100`, and all
 100 rows use the `repeated_chain` profile. Its final 37 rows are more
@@ -406,12 +406,15 @@ IoU `0.2436`, mean disagreement `0.5800`, and mean area `0.0950`. Across 78
 pcb2 rows, 30 are accepted as soft masks, expected IoU is `0.2106`,
 disagreement is `0.4274`, and area is `0.0437`. A matched comparison shows the
 next 45 pcb2 rows fall from `48.5%` to `31.1%` acceptance relative to the first
-33, while Qwen validity and disagreement remain nearly unchanged. This
-preregisters candidate-pool composition and selector transfer as stronger
-explanations than localization failure. Every pcb1 and pcb2 row is `ring_sector`.
+33, while Qwen validity and disagreement remain nearly unchanged. The final 22
+pcb2 rows rebound to `54.5%` acceptance and complete the category at 42/100,
+confirming within-category heterogeneity rather than monotonic collapse. Pcb3
+opens at 25/25 soft-mask acceptance, expected IoU `0.3735`, and mean area
+`0.1200`; its large masks preregister precision and positive-rate as decisive
+locked checks. Every pcb1, pcb2, and current pcb3 row is `ring_sector`.
 Structural specialists are disabled, so the collapsed profile does not alter
 inference. Locked evaluation must distinguish appropriate pcb2 conservatism
-from under-segmentation and pcb1 confidence from broad-mask over-acceptance.
+from under-segmentation and pcb1/pcb3 confidence from broad-mask over-acceptance.
 
 The fifth interruption also exposed a bounded production weakness: PNG role
 artifacts are written directly rather than atomically. One corrupt file was
@@ -421,7 +424,7 @@ and no checkpoint row was affected. Do not change this during the frozen run;
 add atomic temporary-file publication in the next operational revision.
 
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 1.94-hour remaining VisA inference, run the
+and complete the approximately 1.64-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 
@@ -963,7 +966,7 @@ post-confirmation ablations, not automatic implementation tasks.
 | **R3** | Locked-category mask confirmation | ✅ Primary confirmation complete | 839 images, 29,584 candidates. Locked macro Dice `0.3171`; oracle `0.5615`. Real-widened selector beats synthetic selector `+0.0952`, CI `[+0.0450,+0.1440]`; full release targets fail. | Selector contribution confirmed; architecture release rejected. No tuning on exposed categories. |
 | **R4** | Visibility critic validity + generation re-audit | 🟡 Automated gate passed; independent gate pending | Global retry and mask-local crop rejected. Fixed adapter negligible. Text/clone critic arbitration: visibility `+0.0289 [0.0110,0.0487]`, coverage `+0.1300`, leakage `-0.0022`, acceptance `10/18→14/18`. | Keep rejected mechanisms default-off. Do not promote arbitration until two blind reviewers and independent downstream evaluation agree. |
 | **R5** | Independent synthetic-utility ablation | ✅ Complete; promotion gate failed | Fusion-free ResNet18 U-Net, paired seeds, 120 matched steps, five seeds, fixed ratio, and hierarchical bootstrap. Historical pixel AP was `-0.0200` then `-0.0066`; strict deterministic replay reproduces `15/15` artifacts, and the full deterministic estimate is `-0.0015 [-0.0414,+0.0403]`. | Null confirmed under deterministic execution. Do not promote the synthetic corpus or run locked R5. |
-| **R6** | External baselines + paper package | 🟡 VisA runtime `878/1,200`; quantitative external result pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. The exact frozen RC has completed 73.17% of VisA inference under one stable run identity: eight categories are complete and 78 pcb2 rows are checkpointed. Official masks remain sealed, and the category-matched pcb2 confidence decline has not reopened tuning. SubspaceAD and MVTec AD 2 remain blocked. | Complete frozen VisA inference, then perform the one-shot locked evaluation without reopening tuning. |
+| **R6** | External baselines + paper package | 🟡 VisA runtime `925/1,200`; quantitative external result pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. The exact frozen RC has completed 77.08% of VisA inference under one stable run identity: nine categories are complete and 25 pcb3 rows are checkpointed. Official masks remain sealed; the completed pcb2 rebound and high-confidence, large-area pcb3 opening have not reopened tuning. SubspaceAD and MVTec AD 2 remain blocked. | Complete frozen VisA inference, then perform the one-shot locked evaluation without reopening tuning. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly
 

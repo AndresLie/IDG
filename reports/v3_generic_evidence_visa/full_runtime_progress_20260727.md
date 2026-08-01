@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 878
-progress: 73.17%
+runtime samples completed: 925
+progress: 77.08%
 ```
 
 ## Resume Validation
@@ -202,6 +202,15 @@ A twenty-second bounded command:
 - preserved the run ID, both frozen fingerprints, every durable mask role, and
   the sealed reference boundary.
 
+A twenty-third bounded command:
+
+- resumed all 878 checkpoint rows and incremented `resume_count` to 22;
+- completed the final 22 pcb2 rows and added the first 25 pcb3 rows;
+- stopped at 925 unique records during Qwen inference for pcb3 `025`;
+- left no uncheckpointed image or mask artifact;
+- preserved the run ID, both frozen fingerprints, every durable mask role, and
+  the sealed reference boundary.
+
 Current checkpoint:
 
 ```text
@@ -216,8 +225,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `878 / 1,200` |
-| Current run artifacts | `3,989.1 MiB` |
+| Completed rows | `925 / 1,200` |
+| Current run artifacts | `4,193.5 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -256,11 +265,13 @@ incomplete locked run.
 | Twenty-first-vs-twentieth segment rate change | `+9.98%` |
 | Twenty-second-segment rate, 45 pcb2 rows | `19.959 s/image` |
 | Twenty-second-vs-twenty-first rate change | `-6.69%` |
-| Cumulative productive rate | `21.656 s/image` |
-| Projected remaining compute | approximately `1.94 hours` |
-| Projected total compute | approximately `7.22 hours` |
-| Linear artifact projection | approximately `5.32 GiB` |
-| Free storage after checkpoint | approximately `13.17 GiB` |
+| Twenty-third-segment rate, 47 transition rows | `19.107 s/image` |
+| Twenty-third-vs-twenty-second rate change | `-4.27%` |
+| Cumulative productive rate | `21.527 s/image` |
+| Projected remaining compute | approximately `1.64 hours` |
+| Projected total compute | approximately `7.18 hours` |
+| Linear artifact projection | approximately `5.31 GiB` |
+| Free storage after checkpoint | approximately `8.85 GiB` |
 
 The zero-row restricted-sandbox attempt is excluded from productive throughput.
 The projection is operational only. Category transitions and cache reuse may
@@ -268,7 +279,7 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains eight complete categories plus the first 78 pcb2
+The checkpoint now contains nine complete categories plus the first 25 pcb3
 anomalies:
 
 ```text
@@ -280,39 +291,42 @@ fryum: 100
 macaroni1: 100
 macaroni2: 100
 pcb1: 100
-pcb2: 78
+pcb2: 100
+pcb3: 25
 
-needs_review: 552
-soft_mask_only: 326
+needs_review: 562
+soft_mask_only: 363
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 878 rows:
+Selected proposal modes over all 925 rows:
 
 ```text
-fused_q975: 205
-fused_q950: 182
-fused_q900: 71
-fused_q950_component_1: 55
+fused_q975: 207
+fused_q950: 185
+fused_q900: 72
+fused_q950_component_1: 56
 fused_q975_component_1: 19
-fused_q900_component_1: 41
-fused_q850_component_1: 69
+fused_q900_component_1: 48
+fused_q850_component_1: 83
 fused_q850: 16
 sam2_fused_q850_1: 49
-edge_fused_q900_component_1_2: 12
+edge_fused_q900_component_1_2: 13
 edge_fused_q850_component_1_1: 22
 edge_fused_q900_component_1_1: 4
-edge_fused_q850_component_1_2: 22
-fused_q900_component_2: 16
+edge_fused_q850_component_1_2: 23
+fused_q900_component_2: 18
 edge_fused_q850_1: 13
-edge_fused_q850_2: 17
-edge_fused_q900_1: 17
-edge_fused_q900_2: 23
-fused_q850_component_2: 15
-edge_fused_q900_component_2_2: 2
-fused_q900_component_3: 3
+edge_fused_q850_2: 26
+edge_fused_q900_1: 19
+edge_fused_q900_2: 24
+fused_q850_component_2: 16
+edge_fused_q900_component_2_2: 3
+fused_q900_component_3: 4
 edge_fused_q850_component_2_1: 1
 fused_q950_component_2: 2
+fused_q900_component_4: 1
+fused_q850_component_4: 1
 ```
 
 An earlier transition segment's exact selector diagnostics are retained for
@@ -730,6 +744,41 @@ Mean expected IoU is `0.2106`, mean conformal lower bound is `0.0751`, mean
 source disagreement is `0.4274`, and mean selected area is `0.0437`. All 78
 rows remain `ring_sector`; specialists are disabled.
 
+The final 22 pcb2 rows reverse the preceding confidence decline:
+
+```text
+soft_mask_only: 12/22 versus 30/78
+needs_review: 10/22 versus 48/78
+mean expected IoU: 0.2327 versus 0.2106
+mean conformal IoU lower bound: 0.0972 versus 0.0751
+mean source disagreement: 0.3949 versus 0.4274
+mean selected-mask area: 0.0406 versus 0.0437
+Qwen valid localization: 19/22 versus 73/78
+structure profile: ring_sector 22/22
+```
+
+Completed pcb2 therefore contains 42 `soft_mask_only` and 58 `needs_review`
+decisions. Its mean expected IoU is `0.2154`, mean lower bound is `0.0799`, mean
+disagreement is `0.4203`, and mean selected area is `0.0430`. The final rebound
+confirms within-category heterogeneity rather than monotonic selector collapse.
+
+The first 25 pcb3 rows enter the strongest PCB confidence regime:
+
+```text
+soft_mask_only: 25/25
+mean expected IoU: 0.3735
+mean conformal IoU lower bound: 0.2380
+mean source disagreement: 0.4061
+mean selected-mask area: 0.1200
+Qwen valid localization: 23/25
+structure profile: ring_sector 25/25
+```
+
+All rows are accepted despite two Qwen fallbacks, but selected masks are almost
+three times the completed pcb2 mean area. Locked precision and positive-rate
+analysis must determine whether this is useful defect coverage or broad-mask
+over-acceptance. Confidence alone cannot promote this slice.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -738,7 +787,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-a1f5a946b89e6526b21e39931722f32300d704038e55b68cb7c900e3394432fa
+34eec435132476e9d8efcc2ddf3dd4f4f79b65a793a75d68baff9ac6ec696b88
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
