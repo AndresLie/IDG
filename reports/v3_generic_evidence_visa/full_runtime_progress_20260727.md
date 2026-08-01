@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 925
-progress: 77.08%
+runtime samples completed: 976
+progress: 81.33%
 ```
 
 ## Resume Validation
@@ -211,6 +211,15 @@ A twenty-third bounded command:
 - preserved the run ID, both frozen fingerprints, every durable mask role, and
   the sealed reference boundary.
 
+A twenty-fourth bounded command:
+
+- resumed all 925 checkpoint rows and incremented `resume_count` to 23;
+- added the next 51 pcb3 rows and stopped at 976 unique records;
+- was interrupted during Qwen inference for pcb3 `076`;
+- left no uncheckpointed image or mask artifact;
+- preserved the run ID, both frozen fingerprints, every durable mask role, and
+  the sealed reference boundary.
+
 Current checkpoint:
 
 ```text
@@ -225,8 +234,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `925 / 1,200` |
-| Current run artifacts | `4,193.5 MiB` |
+| Completed rows | `976 / 1,200` |
+| Current run artifacts | `4,384.9 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -267,11 +276,13 @@ incomplete locked run.
 | Twenty-second-vs-twenty-first rate change | `-6.69%` |
 | Twenty-third-segment rate, 47 transition rows | `19.107 s/image` |
 | Twenty-third-vs-twenty-second rate change | `-4.27%` |
-| Cumulative productive rate | `21.527 s/image` |
-| Projected remaining compute | approximately `1.64 hours` |
-| Projected total compute | approximately `7.18 hours` |
-| Linear artifact projection | approximately `5.31 GiB` |
-| Free storage after checkpoint | approximately `8.85 GiB` |
+| Twenty-fourth-segment rate, 51 pcb3 rows | `17.613 s/image` |
+| Twenty-fourth-vs-twenty-third rate change | `-7.82%` |
+| Cumulative productive rate | `21.322 s/image` |
+| Projected remaining compute | approximately `1.33 hours` |
+| Projected total compute | approximately `7.11 hours` |
+| Linear artifact projection | approximately `5.26 GiB` |
+| Free storage after checkpoint | approximately `10.64 GiB` |
 
 The zero-row restricted-sandbox attempt is excluded from productive throughput.
 The projection is operational only. Category transitions and cache reuse may
@@ -279,7 +290,7 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains nine complete categories plus the first 25 pcb3
+The checkpoint now contains nine complete categories plus the first 76 pcb3
 anomalies:
 
 ```text
@@ -292,37 +303,37 @@ macaroni1: 100
 macaroni2: 100
 pcb1: 100
 pcb2: 100
-pcb3: 25
+pcb3: 76
 
 needs_review: 562
-soft_mask_only: 363
+soft_mask_only: 414
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 925 rows:
+Selected proposal modes over all 976 rows:
 
 ```text
 fused_q975: 207
 fused_q950: 185
 fused_q900: 72
-fused_q950_component_1: 56
+fused_q950_component_1: 57
 fused_q975_component_1: 19
-fused_q900_component_1: 48
-fused_q850_component_1: 83
+fused_q900_component_1: 55
+fused_q850_component_1: 100
 fused_q850: 16
 sam2_fused_q850_1: 49
-edge_fused_q900_component_1_2: 13
+edge_fused_q900_component_1_2: 17
 edge_fused_q850_component_1_1: 22
 edge_fused_q900_component_1_1: 4
-edge_fused_q850_component_1_2: 23
+edge_fused_q850_component_1_2: 30
 fused_q900_component_2: 18
 edge_fused_q850_1: 13
-edge_fused_q850_2: 26
+edge_fused_q850_2: 40
 edge_fused_q900_1: 19
 edge_fused_q900_2: 24
 fused_q850_component_2: 16
 edge_fused_q900_component_2_2: 3
-fused_q900_component_3: 4
+fused_q900_component_3: 5
 edge_fused_q850_component_2_1: 1
 fused_q950_component_2: 2
 fused_q900_component_4: 1
@@ -779,6 +790,33 @@ three times the completed pcb2 mean area. Locked precision and positive-rate
 analysis must determine whether this is useful defect coverage or broad-mask
 over-acceptance. Confidence alone cannot promote this slice.
 
+The next 51 pcb3 rows reproduce complete soft-mask acceptance with slightly
+lower confidence and much weaker Qwen localization:
+
+```text
+soft_mask_only: 51/51 versus 25/25
+mean expected IoU: 0.3518 versus 0.3735
+mean conformal IoU lower bound: 0.2163 versus 0.2380
+mean source disagreement: 0.3803 versus 0.4061
+mean selected-mask area: 0.1122 versus 0.1200
+Qwen valid localization: 37/51 versus 23/25
+Qwen full-image fallback: 14/51 versus 2/25
+structure profile: ring_sector 51/51
+```
+
+The same-category replication supports the soft-prior design: acceptance
+survives a large increase in localization fallback while provider disagreement
+and mask area decline. It also exposes a calibration weakness. Every pcb3 row
+is accepted despite meaningful confidence and localization variation, so the
+current disposition threshold offers no risk-coverage separation on this
+category.
+
+Across 76 pcb3 rows, all 76 are `soft_mask_only`. Mean expected IoU is `0.3589`,
+mean lower bound is `0.2235`, mean disagreement is `0.3888`, and mean selected
+area is `0.1148`. Sixteen rows use Qwen fallback, and all 76 remain
+`ring_sector`. Locked evaluation must determine whether this is robust anomaly
+coverage or uniform overconfidence on broad PCB regions.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -787,7 +825,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-34eec435132476e9d8efcc2ddf3dd4f4f79b65a793a75d68baff9ac6ec696b88
+1d2719f36b4b9ff152f24d06fc153d7a6ba4bca67aee22842bed0a872c7c4a3b
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
