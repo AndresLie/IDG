@@ -1,0 +1,37 @@
+protocol: v4.2d-decision-conditioned-selection
+status: preregistered-before-run
+purpose: replace non-transferable all-pairs residuals with nested source-held-out decision calibration
+design_input:
+  v4_2c_result: all overrides abstained despite useful raw list-ranking counterfactuals
+  raw_list_rank_counterfactual_macro_gain: 0.0173
+  rule: V4.2c remains a failed immutable result; do not alter its thresholds or artifacts
+datasets:
+  - id: mvtec_development
+    role: exposed-development
+  - id: visa_exposed
+    role: exposed-development
+  - id: kodytek_exposed
+    role: exposed-development
+  - id: btad_exposed
+    role: exposed-development
+  - id: ksdd2_exposed
+    role: exposed-development
+selector:
+  ranking: all-pairs antisymmetric category-free list ranker
+  decision_calibration: nested source-jackknife list-score margin
+  threshold_grid: [0.005, 0.01, 0.02, 0.03, 0.05]
+  minimum_inner_source_macro_dice_gain: 0.005
+  maximum_inner_source_dice_regression: 0.02
+firewall:
+  runtime_inputs: normal images plus unlabeled anomalous images
+  official_masks: exposed-development calibration and evaluation only
+  selector_features: category-and-defect-name-free
+primary_endpoint: leave_dataset_out_dataset_macro_dice_gain
+selection_gates:
+  minimum_macro_dice_gain: 0.01
+  maximum_per_dataset_dice_regression: 0.02
+  minimum_expected_iou_spearman: 0.40
+  maximum_expected_iou_mae: 0.12
+pipeline_gate:
+  minimum_search_region_recall: 0.85
+analysis_rule: retain the V3 deployment fallback unless every outer gate passes

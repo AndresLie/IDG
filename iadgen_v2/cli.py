@@ -97,6 +97,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = commands.add_parser("prepare-visa-benchmark")
     sub.add_argument("--config", required=True, type=Path)
     sub.add_argument("--download", action="store_true")
+    sub = commands.add_parser("prepare-external-development")
+    sub.add_argument("--config", required=True, type=Path)
     sub = commands.add_parser("freeze-architecture")
     sub.add_argument("--config", required=True, type=Path)
     sub = commands.add_parser("reseal-architecture")
@@ -112,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         "locked-evaluate",
         "prepare-locked-benchmark",
         "prepare-visa-benchmark",
+        "prepare-external-development",
     }
     validate_governance_for_command(config, manifest_command, allow_official_masks=allow_official_masks)
     if args.command == "phase5-evaluate":
@@ -221,6 +224,10 @@ def _execute_command(args: argparse.Namespace, config: AppConfig, manifest_path:
             config,
             download=args.download,
         )
+    if args.command == "prepare-external-development":
+        from iadgen_v2.external_development_dataset import prepare_external_development_benchmark
+
+        return "external development runtime manifest written to", prepare_external_development_benchmark(config)
     if args.command == "freeze-architecture":
         from iadgen_v2.architecture_freeze import freeze_generic_architecture
 

@@ -1,0 +1,68 @@
+{
+  "metrics_path": "/home/p76147019/ImgGen/v2/reports/v4_2d_candidate_decision/candidate_ranking/leave_dataset_out_candidate_metrics.json",
+  "metrics_sha256": "98d13657abdaa23bdcc9745b5b131db05755a26e0dfd475229a19649410e95af",
+  "model_path": "/home/p76147019/ImgGen/v2/outputs/v4_2d_candidate_decision/auto_masks/selector/cross_dataset_candidate_ranker.joblib",
+  "model_sha256": "c8dc779ef496a27de0ccd619c458bf303a5092f10f953d674a0281a5627c652f",
+  "promotion_passed": false,
+  "report_path": "/home/p76147019/ImgGen/v2/reports/v4_2d_candidate_decision/candidate_ranking/candidate_calibration_report.md",
+  "report_sha256": "678f7bf9ee5a349e99f97ed35836c8089c0339db13ae28847d4ca8664cf376a1",
+  "schema_version": 1,
+  "sources": [
+    {
+      "categories": [],
+      "dataset_id": "mvtec_development",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/as1b_calib_widen/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "27487bdb7a0c0466e82987aa854233dd962719ac5df74718d4d277e36e3c3189",
+      "reference_kind": "mvtec",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/mvtec_ad",
+      "reference_sha256": null,
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/mvtec_ad"
+    },
+    {
+      "categories": [],
+      "dataset_id": "visa_exposed",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/v3_generic_evidence_visa/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "7a086751bbc4609fdfc9a01096d2b6258c173809738d30f889f2a436d99489e3",
+      "reference_kind": "manifest",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/visa_official_reference_masks/visa_reference_manifest.jsonl",
+      "reference_sha256": "cb19d9e379b1bcfc4546e5103a2452fa85d83e9f758f501e9c431a2ff43ad693",
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/visa_runtime"
+    },
+    {
+      "categories": [],
+      "dataset_id": "kodytek_exposed",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/v4_candidate_ranking_kodytek/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "f6e964ba95eb80ee2b1b27c9ca32973b5a8a71e14a20e4cf4b579053c8387af7",
+      "reference_kind": "mvtec",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/kodytek_wood_pilot",
+      "reference_sha256": null,
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/kodytek_wood_runtime"
+    },
+    {
+      "categories": [
+        "btad_01",
+        "btad_02",
+        "btad_03"
+      ],
+      "dataset_id": "btad_exposed",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/v4_2c_external_auto_masks/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "81ac00c732142c3611f0dceae6adbde4322b35fdd6bb14cd878bca312c0ef5df",
+      "reference_kind": "manifest",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/v4_external_reference/external_development_reference_manifest.jsonl",
+      "reference_sha256": "6f57f6b2d81b67a1e3c25b8455fcd54e20b223407183bd12a3f85b00158252e0",
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/v4_external_runtime"
+    },
+    {
+      "categories": [
+        "ksdd2"
+      ],
+      "dataset_id": "ksdd2_exposed",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/v4_2c_external_auto_masks/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "81ac00c732142c3611f0dceae6adbde4322b35fdd6bb14cd878bca312c0ef5df",
+      "reference_kind": "manifest",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/v4_external_reference/external_development_reference_manifest.jsonl",
+      "reference_sha256": "6f57f6b2d81b67a1e3c25b8455fcd54e20b223407183bd12a3f85b00158252e0",
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/v4_external_runtime"
+    }
+  ]
+}

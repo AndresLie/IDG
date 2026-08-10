@@ -9,10 +9,13 @@ from PIL import Image
 from iadgen_v2.auto_mask.candidate_calibration import (
     CANDIDATE_FEATURE_NAMES,
     LIST_RANKING_CONTRACT,
+    CandidateDecisionCalibrationContract,
     CrossDatasetCandidateCalibrator,
     _list_pair_feature_matrix,
     _list_rank_representation,
     _select_prediction_row,
+    _select_source_decision_policy,
+    _source_balanced_quantile,
     build_arbitration_candidates,
     evidence_augmented_regions,
     regions_to_mask,
@@ -130,6 +133,73 @@ def test_list_rank_selection_requires_positive_lower_bound_over_v3() -> None:
     assert not override
 
 
+def test_source_calibrated_list_rank_uses_margin_and_fails_closed() -> None:
+    baseline = {
+        "mode": "v4_baseline_selected",
+        "is_baseline": True,
+        "list_score": 0.10,
+    }
+    candidate = {
+        "mode": "compact",
+        "is_baseline": False,
+        "list_score": 0.12,
+        "gain_lower_bound": -1.0,
+    }
+    bundle = {
+        "selection_strategy": "source_calibrated_list_rank",
+        "decision_calibration_enabled": True,
+        "decision_margin_threshold": 0.01,
+    }
+
+    selected, override = _select_prediction_row(bundle, [baseline, candidate])
+    assert selected["mode"] == "compact"
+    assert override
+
+    selected, override = _select_prediction_row(
+        {**bundle, "decision_calibration_enabled": False},
+        [baseline, candidate],
+    )
+    assert selected["mode"] == "v4_baseline_selected"
+    assert not override
+
+
+def test_source_decision_policy_selects_only_eligible_threshold() -> None:
+    records = [
+        {"dataset_id": "a", "candidate_available": True, "decision_margin": 0.006, "dice_gain": 0.04},
+        {"dataset_id": "a", "candidate_available": True, "decision_margin": 0.020, "dice_gain": -0.01},
+        {"dataset_id": "b", "candidate_available": True, "decision_margin": 0.006, "dice_gain": 0.03},
+        {"dataset_id": "b", "candidate_available": True, "decision_margin": 0.020, "dice_gain": -0.03},
+    ]
+    contract = CandidateDecisionCalibrationContract(
+        threshold_grid=(0.005, 0.01),
+        minimum_macro_dice_gain=0.005,
+        max_source_dice_regression=0.02,
+    )
+
+    selected = _select_source_decision_policy(records, contract)
+    rejected = _select_source_decision_policy(
+        records,
+        CandidateDecisionCalibrationContract(
+            threshold_grid=(0.005, 0.01),
+            minimum_macro_dice_gain=0.05,
+            max_source_dice_regression=0.02,
+        ),
+    )
+
+    assert selected["decision_calibration_enabled"]
+    assert selected["decision_margin_threshold"] == 0.005
+    assert selected["decision_calibration_worst_source_dice_gain"] >= 0.0
+    assert not rejected["decision_calibration_enabled"]
+
+
+def test_source_balanced_quantile_prevents_large_dataset_tail_dominance() -> None:
+    values = np.asarray([0.0] * 100 + [1.0] * 10, dtype=np.float32)
+    sources = np.asarray(["large"] * 100 + ["small"] * 10)
+
+    assert float(np.quantile(values, 0.90)) < 1.0
+    assert _source_balanced_quantile(values, sources, 0.90) == 1.0
+
+
 def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_path: Path) -> None:
     posterior_path = _write_fixed_posterior_bundle(tmp_path)
     sources = []
@@ -191,6 +261,7 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
         sources.append(
             {
                 "dataset_id": dataset_id,
+                "categories": ["part_0", "part_1", "part_2"],
                 "metadata_path": str(metadata_path),
                 "runtime_root": str(dataset_root),
                 "reference": {"kind": "manifest", "manifest_path": str(reference_path)},
@@ -203,7 +274,8 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
         path=tmp_path / "config.yaml",
         data={
             "candidate_calibration": {
-                "selection_strategy": "all_pairs_list_rank",
+                "selection_strategy": "source_calibrated_list_rank",
+                "risk_calibration": "source_jackknife_equal_weight",
                 "sources": sources,
                 "posterior_model_path": str(posterior_path),
                 "model_output_path": str(model_path),
@@ -236,8 +308,13 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
 
     assert manifest["model_sha256"]
     assert set(calibrator.bundle["development_datasets"]) == {"dataset_a", "dataset_b"}
-    assert calibrator.bundle["selection_strategy"] == "all_pairs_list_rank"
+    assert calibrator.bundle["selection_strategy"] == "source_calibrated_list_rank"
+    assert calibrator.bundle["risk_calibration"] == "source_jackknife_equal_weight"
+    assert calibrator.bundle["risk_calibration_effective"] == "source_jackknife_equal_weight"
+    assert set(calibrator.bundle["gain_residual_q90_by_source"]) == {"dataset_a", "dataset_b"}
+    assert all(source["categories"] == ["part_0", "part_1", "part_2"] for source in manifest["sources"])
     assert tuple(calibrator.bundle["pair_feature_names"]) == LIST_RANKING_CONTRACT.pair_feature_names
+    assert calibrator.bundle["decision_calibration"] == "nested_source_jackknife_list_margin"
     assert result.baseline.mode == "v4_baseline_selected"
     assert result.predictions
     assert (report_dir / "leave_dataset_out_candidate_metrics.json").exists()

@@ -256,6 +256,40 @@ def test_visa_preparation_manifest_hashes_archive_and_official_split(tmp_path: P
     ]
 
 
+def test_external_development_preparation_hashes_every_archive(tmp_path: Path) -> None:
+    first = tmp_path / "first.zip"
+    second = tmp_path / "second.zip"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    config.data["external_benchmarks"] = {
+        "development": {
+            "sources": [
+                {
+                    "archive_path": str(first),
+                    "archive_sha256": hashlib.sha256(b"first").hexdigest(),
+                },
+                {
+                    "archive_path": str(second),
+                    "archive_sha256": hashlib.sha256(b"second").hexdigest(),
+                },
+            ]
+        }
+    }
+
+    records = configured_artifact_inventory(config, "prepare-external-development")
+
+    assert [row["sha256"] for row in records] == [
+        hashlib.sha256(b"first").hexdigest(),
+        hashlib.sha256(b"second").hexdigest(),
+    ]
+
+
 def test_posterior_training_manifest_hashes_calibration_inputs(tmp_path: Path) -> None:
     metadata = tmp_path / "metadata.jsonl"
     reference = tmp_path / "references.jsonl"
@@ -293,9 +327,11 @@ def test_candidate_training_manifest_hashes_sources_and_posterior(tmp_path: Path
     metadata = tmp_path / "metadata.jsonl"
     reference = tmp_path / "references.jsonl"
     posterior = tmp_path / "posterior.joblib"
+    protocol = tmp_path / "protocol.yaml"
     metadata.write_bytes(b"metadata")
     reference.write_bytes(b"references")
     posterior.write_bytes(b"posterior")
+    protocol.write_bytes(b"protocol")
     config = load_config(
         _config_path(
             tmp_path,
@@ -312,6 +348,7 @@ def test_candidate_training_manifest_hashes_sources_and_posterior(tmp_path: Path
             }
         ],
     }
+    config.data["research_governance"]["protocol_path"] = str(protocol)
 
     records = configured_artifact_inventory(config, "auto-mask-train-candidate-calibrator")
 
@@ -319,11 +356,13 @@ def test_candidate_training_manifest_hashes_sources_and_posterior(tmp_path: Path
         "candidate_calibration.sources[0].metadata_path",
         "candidate_calibration.sources[0].reference.manifest_path",
         "candidate_calibration.posterior_model_path",
+        "research_governance.protocol_path",
     ]
     assert [row["sha256"] for row in records] == [
         hashlib.sha256(b"metadata").hexdigest(),
         hashlib.sha256(b"references").hexdigest(),
         hashlib.sha256(b"posterior").hexdigest(),
+        hashlib.sha256(b"protocol").hexdigest(),
     ]
 
 

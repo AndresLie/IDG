@@ -1,0 +1,31 @@
+protocol: v4.2c-external-development
+status: preregistered-before-preparation
+purpose: broaden exposed cross-domain candidate-ranking calibration
+datasets:
+  - id: btad
+    role: exposed-development
+    source: BeanTech Anomaly Detection Dataset
+  - id: ksdd2
+    role: exposed-development
+    source: Kolektor Surface-Defect Dataset 2
+subset_policy:
+  algorithm: sha256_rank_v1
+  seed: 20260810
+  btad:
+    train_good_per_category: 16
+    test_anomaly_per_category: 20
+  ksdd2:
+    train_good_per_category: 16
+    test_anomaly_per_category: 60
+firewall:
+  runtime_inputs: normal images plus unlabeled anomalous images
+  official_masks: preparation-and-evaluation-only
+  selector_features: category-and-defect-name-free
+primary_endpoint: leave_dataset_out_dataset_macro_dice_gain
+promotion_gates:
+  minimum_macro_dice_gain: 0.01
+  maximum_per_dataset_dice_regression: 0.02
+  pairwise_conformal_coverage_min: 0.85
+  pairwise_conformal_coverage_max: 0.95
+  minimum_search_region_recall: 0.85
+analysis_rule: retain the V4.2b deployment fallback unless every promotion gate passes

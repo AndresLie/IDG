@@ -1,0 +1,95 @@
+project:
+  output_dir: outputs/v4_2c_external_auto_masks
+  report_dir: reports/v4_2c_external_auto_masks
+
+dataset:
+  root: data/v4_external_runtime
+  download: false
+  seed: 20260810
+  adaptation_per_defect: 2
+  targets:
+    btad_01: [bad]
+    btad_02: [bad]
+    btad_03: [bad]
+    ksdd2: [bad]
+
+generation:
+  samples_per_category: 1
+  seed: 20260810
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect: {}
+  negative_prompt: "text, watermark, logo, unrealistic artifact"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation: {}
+
+research_governance:
+  enabled: true
+  architecture_tag: v4.2c-external-generic-evidence-development
+  experiment_track: exposed-multidataset-selective-risk
+  development_categories: [btad_01, btad_02, btad_03, ksdd2]
+  locked_categories: []
+  locked_official_mask_roots: [data/v4_external_reference]
+  enforce_official_mask_isolation: true
+  dataset_fingerprint_mode: sha256
+
+auto_masks:
+  architecture: generic_evidence
+  specialists: disabled
+  provider: qwen
+  publish_dataset_ground_truth: false
+  overwrite: true
+  resume_incomplete: true
+  artifact_retention: full
+  write_overlays: false
+  write_contact_sheets: false
+  write_variant_overlays: false
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  qwen_prompt_style: defect_localization_json
+  min_box_area_ratio: 0.001
+  max_box_area_ratio: 0.60
+  allow_localization_fallback: true
+  localization_fallback_mode: full_image
+  min_component_area: 12
+  ground_truth_mask_variant: eval_tight
+  eval_mask_variant: eval_tight
+  training_mask_variant: training_medium
+  sam_provider: sam2
+  sam2_checkpoint: model_cache/sam2/sam2.1_hiera_tiny.pt
+  sam2_model_cfg: configs/sam2.1/sam2.1_hiera_t.yaml
+  sam_device: cuda
+  dinov2_model: facebook/dinov2-small
+  dinov2_cache_dir: model_cache/huggingface/hub
+  dinov2_local_files_only: true
+  dinov2_device: auto
+  selector_model_path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.joblib
+  generic_evidence:
+    persist_target_evidence_cache: false
+    edge_refine: true
+    dinov2_enabled: true
+    dinov2_scales: [448]
+    dinov2_layers: [-4, -1]
+    dinov2_memory_stride: 4
+    registered_residual_enabled: false
+    musc_enabled: false
+    texture_residual_enabled: true
+    sam2_enabled: true
+    sam_positive_points: 5
+    sam_negative_points: 4
+    max_normals: 16
+    widen_on_repeated_texture: true
+    posterior_enabled: false
+    posterior_override_eval: false
+    candidate_calibration_enabled: false

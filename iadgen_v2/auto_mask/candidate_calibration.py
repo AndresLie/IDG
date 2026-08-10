@@ -27,6 +27,11 @@ CANDIDATE_CALIBRATION_SCHEMA_VERSION = 1
 CANDIDATE_SELECTION_STRATEGIES = (
     "baseline_guarded_candidate_gain",
     "all_pairs_list_rank",
+    "source_calibrated_list_rank",
+)
+CANDIDATE_RISK_CALIBRATION_MODES = (
+    "category_oof",
+    "source_jackknife_equal_weight",
 )
 CANDIDATE_FEATURE_NAMES = (
     "fused_mean",
@@ -61,12 +66,15 @@ class CandidateCalibrationSource:
     reference_kind: str
     reference_path: Path
     runtime_root: Path
+    categories: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.dataset_id.strip():
             raise ValueError("candidate calibration dataset_id must be non-empty")
         if self.reference_kind not in {"mvtec", "manifest"}:
             raise ValueError("candidate calibration reference kind must be mvtec or manifest")
+        if any(not category.strip() for category in self.categories):
+            raise ValueError("candidate calibration source categories must be non-empty strings")
 
 
 @dataclass(frozen=True)
@@ -129,6 +137,30 @@ LIST_RANKING_CONTRACT = CandidateListRankingContract(
     + tuple(f"list_std_{name}" for name in CANDIDATE_FEATURE_NAMES),
 )
 LIST_RANK_DIRECTIONAL_FEATURE_COUNT = 2 * len(CANDIDATE_FEATURE_NAMES)
+LIST_RANKING_SELECTION_STRATEGIES = frozenset(
+    {"all_pairs_list_rank", "source_calibrated_list_rank"}
+)
+
+
+@dataclass(frozen=True)
+class CandidateDecisionCalibrationContract:
+    """Category-free policy for calibrating the final override decision."""
+
+    threshold_grid: tuple[float, ...]
+    minimum_macro_dice_gain: float
+    max_source_dice_regression: float
+
+    def __post_init__(self) -> None:
+        if not self.threshold_grid:
+            raise ValueError("Decision calibration threshold_grid must be non-empty")
+        if any(not np.isfinite(value) or value < 0.0 for value in self.threshold_grid):
+            raise ValueError("Decision calibration thresholds must be finite and non-negative")
+        if tuple(sorted(set(self.threshold_grid))) != self.threshold_grid:
+            raise ValueError("Decision calibration thresholds must be unique and sorted")
+        if self.minimum_macro_dice_gain < 0.0:
+            raise ValueError("Decision calibration minimum_macro_dice_gain must be non-negative")
+        if self.max_source_dice_regression < 0.0:
+            raise ValueError("Decision calibration max_source_dice_regression must be non-negative")
 
 
 @dataclass(frozen=True)
@@ -158,7 +190,7 @@ class CrossDatasetCandidateCalibrator:
         selection_strategy = str(loaded.get("selection_strategy", "baseline_guarded_candidate_gain"))
         if selection_strategy not in CANDIDATE_SELECTION_STRATEGIES:
             raise ValueError(f"Unsupported candidate selection strategy: {selection_strategy}")
-        if selection_strategy == "all_pairs_list_rank" and tuple(loaded.get("pair_feature_names", ())) != (
+        if selection_strategy in LIST_RANKING_SELECTION_STRATEGIES and tuple(loaded.get("pair_feature_names", ())) != (
             LIST_RANKING_CONTRACT.pair_feature_names
         ):
             raise ValueError(f"Candidate list-ranking feature contract mismatch: {model_path}")
@@ -359,6 +391,20 @@ def regions_to_mask(shape: tuple[int, int], regions: tuple[tuple[int, int, int, 
     return output
 
 
+def _decision_contract_from_settings(settings: dict[str, Any]) -> CandidateDecisionCalibrationContract:
+    raw = settings.get("decision_calibration", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise ValueError("candidate_calibration.decision_calibration must be a mapping")
+    thresholds = tuple(float(value) for value in raw.get("threshold_grid", (0.005, 0.01, 0.02, 0.03, 0.05)))
+    return CandidateDecisionCalibrationContract(
+        threshold_grid=thresholds,
+        minimum_macro_dice_gain=float(raw.get("minimum_macro_dice_gain", 0.005)),
+        max_source_dice_regression=float(raw.get("max_source_dice_regression", 0.02)),
+    )
+
+
 def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
     settings = config.data.get("candidate_calibration", {})
     if not isinstance(settings, dict):
@@ -381,6 +427,13 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
             "candidate_calibration.selection_strategy must be one of "
             f"{CANDIDATE_SELECTION_STRATEGIES}, got {selection_strategy!r}"
         )
+    risk_calibration = str(settings.get("risk_calibration", "category_oof"))
+    if risk_calibration not in CANDIDATE_RISK_CALIBRATION_MODES:
+        raise ValueError(
+            "candidate_calibration.risk_calibration must be one of "
+            f"{CANDIDATE_RISK_CALIBRATION_MODES}, got {risk_calibration!r}"
+        )
+    decision_contract = _decision_contract_from_settings(settings)
     rows, sample_rows = _build_training_rows(
         sources,
         posterior,
@@ -411,7 +464,13 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
     for dataset_id in datasets:
         train_rows = [row for row in rows if row["dataset_id"] != dataset_id]
         test_rows = [row for row in rows if row["dataset_id"] == dataset_id]
-        bundle = _fit_candidate_bundle(train_rows, model_settings, selection_strategy=selection_strategy)
+        bundle = _fit_candidate_bundle(
+            train_rows,
+            model_settings,
+            selection_strategy=selection_strategy,
+            risk_calibration=risk_calibration,
+            decision_contract=decision_contract,
+        )
         bundle["minimum_gain_lower_bound"] = minimum_gain_lower_bound
         if minimum_expected_iou_gain is not None:
             bundle["minimum_expected_iou_gain"] = minimum_expected_iou_gain
@@ -424,13 +483,21 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
         held_out_rows,
         settings,
         selection_strategy=selection_strategy,
+        risk_calibration=risk_calibration,
     )
-    final_bundle = _fit_candidate_bundle(rows, model_settings, selection_strategy=selection_strategy)
+    final_bundle = _fit_candidate_bundle(
+        rows,
+        model_settings,
+        selection_strategy=selection_strategy,
+        risk_calibration=risk_calibration,
+        decision_contract=decision_contract,
+    )
     final_bundle.update(
         {
             "schema_version": CANDIDATE_CALIBRATION_SCHEMA_VERSION,
             "feature_names": list(CANDIDATE_FEATURE_NAMES),
             "selection_strategy": selection_strategy,
+            "risk_calibration": risk_calibration,
             "candidate_quantiles": list(quantiles),
             "max_components_per_quantile": max_components,
             "localization_envelope": localization_envelope,
@@ -486,6 +553,7 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
                     "reference_path": str(source.reference_path),
                     "reference_sha256": _sha256_file(source.reference_path) if source.reference_path.is_file() else None,
                     "runtime_root": str(source.runtime_root),
+                    "categories": list(source.categories),
                 }
                 for source in sources
             ],
@@ -630,48 +698,79 @@ def _fit_candidate_bundle(
     model_settings: dict[str, Any],
     *,
     selection_strategy: str = "baseline_guarded_candidate_gain",
+    risk_calibration: str = "category_oof",
+    decision_contract: CandidateDecisionCalibrationContract | None = None,
 ) -> dict[str, Any]:
     if len(rows) < 20:
         raise ValueError("Candidate calibration requires at least 20 rows")
     if selection_strategy not in CANDIDATE_SELECTION_STRATEGIES:
         raise ValueError(f"Unsupported candidate selection strategy: {selection_strategy}")
+    if risk_calibration not in CANDIDATE_RISK_CALIBRATION_MODES:
+        raise ValueError(f"Unsupported candidate risk calibration: {risk_calibration}")
     features = np.asarray(
         [[float(row["features"][name]) for name in CANDIDATE_FEATURE_NAMES] for row in rows],
         dtype=np.float32,
     )
     groups = np.asarray([str(row["category"]) for row in rows])
+    source_groups = np.asarray([str(row["dataset_id"]) for row in rows])
     weights = _balanced_row_weights(rows)
+    source_jackknife = risk_calibration == "source_jackknife_equal_weight" and len(set(source_groups.tolist())) >= 2
     bundle: dict[str, Any] = {
         "schema_version": CANDIDATE_CALIBRATION_SCHEMA_VERSION,
         "feature_names": list(CANDIDATE_FEATURE_NAMES),
         "selection_strategy": selection_strategy,
+        "risk_calibration": risk_calibration,
+        "risk_calibration_effective": (
+            "source_jackknife_equal_weight" if source_jackknife else "category_oof"
+        ),
+        "risk_calibration_sources": sorted(set(source_groups.tolist())),
     }
     for target_name in ("iou", "precision", "recall"):
         target = np.asarray([float(row[target_name]) for row in rows], dtype=np.float32)
-        oof = _group_oof_regression(features, target, groups, weights, model_settings)
+        oof = (
+            _group_oof_regression(features, target, source_groups, weights, model_settings)
+            if source_jackknife
+            else _group_oof_regression(features, target, groups, weights, model_settings)
+        )
         calibrator = IsotonicRegression(out_of_bounds="clip").fit(oof, target, sample_weight=weights)
         calibrated = np.asarray(calibrator.predict(oof), dtype=np.float32)
-        residual = float(np.quantile(np.maximum(0.0, calibrated - target), 0.90))
+        residual_values = np.maximum(0.0, calibrated - target)
+        residual = (
+            _source_balanced_quantile(residual_values, source_groups, 0.90)
+            if source_jackknife
+            else float(np.quantile(residual_values, 0.90))
+        )
         model = HistGradientBoostingRegressor(**model_settings).fit(features, target, sample_weight=weights)
         bundle[f"{target_name}_model"] = model
         bundle[f"{target_name}_calibrator"] = calibrator
         bundle[f"{target_name}_residual_q90"] = residual
+        bundle[f"{target_name}_residual_q90_by_source"] = (
+            _residual_quantiles_by_source(residual_values, source_groups, 0.90)
+            if source_jackknife
+            else {}
+        )
 
-    if selection_strategy == "all_pairs_list_rank":
-        pair_features, pair_targets, pair_groups, pair_weights = _list_rank_training_arrays(rows)
+    if selection_strategy in LIST_RANKING_SELECTION_STRATEGIES:
+        pair_features, pair_targets, pair_groups, pair_sources, pair_weights = _list_rank_training_arrays(rows)
         bundle["pair_feature_names"] = list(LIST_RANKING_CONTRACT.pair_feature_names)
     else:
-        pair_features, pair_targets, pair_groups, pair_weights = _gain_training_arrays(rows)
+        pair_features, pair_targets, pair_groups, pair_sources, pair_weights = _gain_training_arrays(rows)
     pair_oof = (
         _group_oof_antisymmetric_regression(
             pair_features,
             pair_targets,
-            pair_groups,
+            pair_sources if source_jackknife else pair_groups,
             pair_weights,
             model_settings,
         )
-        if selection_strategy == "all_pairs_list_rank"
-        else _group_oof_regression(pair_features, pair_targets, pair_groups, pair_weights, model_settings)
+        if selection_strategy in LIST_RANKING_SELECTION_STRATEGIES
+        else _group_oof_regression(
+            pair_features,
+            pair_targets,
+            pair_sources if source_jackknife else pair_groups,
+            pair_weights,
+            model_settings,
+        )
     )
     gain_model = HistGradientBoostingRegressor(**model_settings).fit(
         pair_features,
@@ -679,7 +778,26 @@ def _fit_candidate_bundle(
         sample_weight=pair_weights,
     )
     bundle["gain_model"] = gain_model
-    bundle["gain_residual_q90"] = float(np.quantile(np.maximum(0.0, pair_oof - pair_targets), 0.90))
+    gain_residuals = np.maximum(0.0, pair_oof - pair_targets)
+    bundle["gain_residual_q90"] = (
+        _source_balanced_quantile(gain_residuals, pair_sources, 0.90)
+        if source_jackknife
+        else float(np.quantile(gain_residuals, 0.90))
+    )
+    bundle["gain_residual_q90_by_source"] = (
+        _residual_quantiles_by_source(gain_residuals, pair_sources, 0.90)
+        if source_jackknife
+        else {}
+    )
+    if selection_strategy == "source_calibrated_list_rank":
+        contract = decision_contract or _decision_contract_from_settings({})
+        bundle.update(
+            _calibrate_source_decision_margin(
+                rows,
+                model_settings,
+                contract,
+            )
+        )
     return bundle
 
 
@@ -694,30 +812,8 @@ def _predict_candidates(bundle: dict[str, Any], candidates: list[ArbitrationCand
         predicted[target_name] = np.clip(bundle[f"{target_name}_calibrator"].predict(raw), 0.0, 1.0)
     selection_strategy = str(bundle.get("selection_strategy", "baseline_guarded_candidate_gain"))
     list_scores: np.ndarray | None = None
-    if selection_strategy == "all_pairs_list_rank":
-        candidate_indices = np.arange(len(candidates), dtype=np.int32)
-        baseline_features = _list_pair_feature_matrix(
-            feature_matrix,
-            candidate_indices,
-            np.zeros(len(candidates), dtype=np.int32),
-        )
-        gain = _antisymmetric_pair_prediction(bundle["gain_model"], baseline_features)
-        list_scores = np.asarray(
-            [
-                float(
-                    _antisymmetric_pair_prediction(
-                        bundle["gain_model"],
-                        _list_pair_feature_matrix(
-                            feature_matrix,
-                            np.full(len(candidates), index, dtype=np.int32),
-                            candidate_indices,
-                        ),
-                    ).mean()
-                )
-                for index in range(len(candidates))
-            ],
-            dtype=np.float32,
-        )
+    if selection_strategy in LIST_RANKING_SELECTION_STRATEGIES:
+        gain, list_scores = _list_candidate_scores(bundle["gain_model"], feature_matrix)
     else:
         baseline_features = feature_matrix[0]
         pair_features = np.concatenate(
@@ -758,13 +854,19 @@ def _select_prediction_row(
     baseline = next(row for row in prediction_rows if bool(row["is_baseline"]))
     alternatives = [row for row in prediction_rows if not bool(row["is_baseline"])]
     strategy = str(bundle.get("selection_strategy", "baseline_guarded_candidate_gain"))
-    if strategy == "all_pairs_list_rank":
+    if strategy in LIST_RANKING_SELECTION_STRATEGIES:
         best = max(prediction_rows, key=lambda row: float(row.get("list_score", float("-inf"))))
-        expected_iou_gain = float(best["expected_iou"]) - float(baseline["expected_iou"])
-        override = not bool(best["is_baseline"]) and bool(
-            float(best["gain_lower_bound"]) > float(bundle.get("minimum_gain_lower_bound", 0.0))
-            and expected_iou_gain > float(bundle.get("minimum_expected_iou_gain", float("-inf")))
-        )
+        if strategy == "source_calibrated_list_rank":
+            margin = float(best.get("list_score", 0.0)) - float(baseline.get("list_score", 0.0))
+            override = bool(bundle.get("decision_calibration_enabled", False)) and not bool(best["is_baseline"]) and bool(
+                margin > float(bundle.get("decision_margin_threshold", float("inf")))
+            )
+        else:
+            expected_iou_gain = float(best["expected_iou"]) - float(baseline["expected_iou"])
+            override = not bool(best["is_baseline"]) and bool(
+                float(best["gain_lower_bound"]) > float(bundle.get("minimum_gain_lower_bound", 0.0))
+                and expected_iou_gain > float(bundle.get("minimum_expected_iou_gain", float("-inf")))
+            )
     else:
         best = max(alternatives, key=lambda row: float(row["gain_lower_bound"])) if alternatives else baseline
         override = bool(
@@ -815,7 +917,7 @@ def _fold_summary(
             for row in group
             if not bool(row["is_baseline"])
         )
-        if str(bundle.get("selection_strategy")) == "all_pairs_list_rank" and len(group) > 1:
+        if str(bundle.get("selection_strategy")) in LIST_RANKING_SELECTION_STRATEGIES and len(group) > 1:
             actual = np.asarray([float(row["iou"]) for row in group])
             predicted_rank = np.asarray([float(row["list_score"]) for row in group])
             if float(actual.std()) > 1e-12 and float(predicted_rank.std()) > 1e-12:
@@ -833,6 +935,20 @@ def _fold_summary(
     source_samples = [row for row in sample_rows if row["dataset_id"] == dataset_id]
     return {
         "dataset_id": dataset_id,
+        "risk_calibration_effective": str(bundle.get("risk_calibration_effective", "category_oof")),
+        "gain_residual_q90": float(bundle["gain_residual_q90"]),
+        "decision_calibration_enabled": bool(bundle.get("decision_calibration_enabled", False)),
+        "decision_margin_threshold": (
+            float(bundle["decision_margin_threshold"])
+            if bundle.get("decision_margin_threshold") is not None
+            else None
+        ),
+        "decision_calibration_macro_dice_gain": float(
+            bundle.get("decision_calibration_macro_dice_gain", 0.0)
+        ),
+        "decision_calibration_worst_source_dice_gain": float(
+            bundle.get("decision_calibration_worst_source_dice_gain", 0.0)
+        ),
         "images": len(selected),
         "candidate_count": len(rows),
         "baseline_dice": float(np.mean([float(row["dice"]) for row in baseline])),
@@ -866,6 +982,7 @@ def _overall_summary(
     settings: dict[str, Any],
     *,
     selection_strategy: str,
+    risk_calibration: str,
 ) -> dict[str, Any]:
     mean = lambda key: float(np.mean([float(fold[key]) for fold in folds]))
     max_regression = float(settings.get("max_dataset_dice_regression", 0.02))
@@ -876,6 +993,15 @@ def _overall_summary(
         if selection_strategy == "all_pairs_list_rank"
         else "conformal_coverage"
     )
+    risk_gate_name = "conformal_coverage"
+    if selection_strategy == "source_calibrated_list_rank":
+        coverage_key = "nested_source_decision_calibration"
+        risk_gate_name = "decision_calibration"
+        risk_gate_passed = all(bool(fold["decision_calibration_enabled"]) for fold in folds)
+    else:
+        risk_gate_passed = all(
+            coverage_min <= float(fold[coverage_key]) <= coverage_max for fold in folds
+        )
     gates = {
         "expected_iou_spearman": all(
             float(fold["expected_iou_spearman"]) >= float(settings.get("target_spearman", 0.40)) for fold in folds
@@ -883,9 +1009,7 @@ def _overall_summary(
         "expected_iou_mae": all(
             float(fold["expected_iou_mae"]) <= float(settings.get("target_mae", 0.12)) for fold in folds
         ),
-        "conformal_coverage": all(
-            coverage_min <= float(fold[coverage_key]) <= coverage_max for fold in folds
-        ),
+        risk_gate_name: risk_gate_passed,
         "search_region_recall": all(
             float(fold["search_region_recall"]) >= float(settings.get("target_search_recall", 0.85)) for fold in folds
         ),
@@ -909,12 +1033,17 @@ def _overall_summary(
         "dataset_macro_expected_iou_mae": mean("expected_iou_mae"),
         "dataset_macro_conformal_coverage": mean("conformal_coverage"),
         "dataset_macro_pairwise_conformal_coverage": mean("pairwise_conformal_coverage"),
+        "dataset_macro_decision_calibration_gain": mean("decision_calibration_macro_dice_gain"),
+        "dataset_worst_decision_calibration_source_gain": float(
+            min(float(fold["decision_calibration_worst_source_dice_gain"]) for fold in folds)
+        ),
         "dataset_macro_within_image_rank_spearman": mean("within_image_rank_spearman"),
         "dataset_macro_search_region_recall": mean("search_region_recall"),
         "dataset_macro_search_region_area_fraction": mean("search_region_area_fraction"),
         "gates": gates,
         "coverage_metric": coverage_key,
         "selection_strategy": selection_strategy,
+        "risk_calibration": risk_calibration,
         "minimum_expected_iou_gain": (
             float(settings["minimum_expected_iou_gain"])
             if settings.get("minimum_expected_iou_gain") is not None
@@ -934,6 +1063,9 @@ def _parse_sources(config: AppConfig, settings: dict[str, Any]) -> list[Candidat
         if not isinstance(item, dict) or not isinstance(item.get("reference"), dict):
             raise ValueError("Each candidate calibration source requires a reference mapping")
         reference = item["reference"]
+        raw_categories = item.get("categories", [])
+        if not isinstance(raw_categories, list) or any(not isinstance(value, str) for value in raw_categories):
+            raise ValueError("candidate calibration source categories must be a list of strings")
         output.append(
             CandidateCalibrationSource(
                 dataset_id=str(item.get("dataset_id", "")),
@@ -941,6 +1073,7 @@ def _parse_sources(config: AppConfig, settings: dict[str, Any]) -> list[Candidat
                 reference_kind=str(reference.get("kind", "")),
                 reference_path=config.resolve_path(str(reference.get("root") or reference.get("manifest_path"))),
                 runtime_root=config.resolve_path(str(item.get("runtime_root", ""))),
+                categories=tuple(raw_categories),
             )
         )
     if len({source.dataset_id for source in output}) != len(output):
@@ -965,6 +1098,8 @@ def _source_samples(source: CandidateCalibrationSource) -> list[_CalibrationSamp
     samples = []
     for row in _read_jsonl(source.metadata_path):
         category = str(row["category"])
+        if source.categories and category not in source.categories:
+            continue
         defect_type = str(row["defect_type"])
         image_path = Path(str(row["image_path"]))
         stem = image_path.stem
@@ -1057,10 +1192,11 @@ def _group_oof_antisymmetric_regression(
 
 def _gain_training_arrays(
     rows: list[dict[str, Any]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     features = []
     targets = []
     groups = []
+    sources = []
     weights = []
     sample_counts: dict[str, int] = {}
     for sample_id in {str(row["sample_id"]) for row in rows}:
@@ -1077,6 +1213,7 @@ def _gain_training_arrays(
             features.append(np.concatenate((candidate_features, baseline_features, candidate_features - baseline_features)))
             targets.append(float(row["iou"]) - float(baseline["iou"]))
             groups.append(str(row["category"]))
+            sources.append(str(row["dataset_id"]))
             weights.append(1.0 / max(1, dataset_counts[str(row["dataset_id"])]) / max(1, sample_counts[sample_id]))
     weights_array = np.asarray(weights, dtype=np.float32)
     weights_array /= max(1e-8, float(weights_array.mean()))
@@ -1084,6 +1221,7 @@ def _gain_training_arrays(
         np.asarray(features, dtype=np.float32),
         np.asarray(targets, dtype=np.float32),
         np.asarray(groups),
+        np.asarray(sources),
         weights_array,
     )
 
@@ -1150,12 +1288,44 @@ def _antisymmetric_pair_prediction(model: HistGradientBoostingRegressor, pair_fe
     )
 
 
+def _list_candidate_scores(
+    model: HistGradientBoostingRegressor,
+    feature_matrix: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    feature_matrix = np.asarray(feature_matrix, dtype=np.float32)
+    candidate_indices = np.arange(len(feature_matrix), dtype=np.int32)
+    baseline_features = _list_pair_feature_matrix(
+        feature_matrix,
+        candidate_indices,
+        np.zeros(len(feature_matrix), dtype=np.int32),
+    )
+    baseline_gain = _antisymmetric_pair_prediction(model, baseline_features)
+    list_scores = np.asarray(
+        [
+            float(
+                _antisymmetric_pair_prediction(
+                    model,
+                    _list_pair_feature_matrix(
+                        feature_matrix,
+                        np.full(len(feature_matrix), index, dtype=np.int32),
+                        candidate_indices,
+                    ),
+                ).mean()
+            )
+            for index in range(len(feature_matrix))
+        ],
+        dtype=np.float32,
+    )
+    return baseline_gain, list_scores
+
+
 def _list_rank_training_arrays(
     rows: list[dict[str, Any]],
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     features: list[np.ndarray] = []
     targets: list[float] = []
     groups: list[str] = []
+    sources: list[str] = []
     weights: list[float] = []
     grouped_rows: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
@@ -1195,6 +1365,7 @@ def _list_rank_training_arrays(
         targets.extend(pair_targets)
         targets.extend(-value for value in pair_targets)
         groups.extend([category_group] * (2 * len(pair_targets)))
+        sources.extend([dataset_id] * (2 * len(pair_targets)))
         weights.extend([pair_weight] * (2 * len(pair_targets)))
     if not features:
         raise ValueError("List ranking requires at least one within-image candidate pair")
@@ -1204,8 +1375,171 @@ def _list_rank_training_arrays(
         np.asarray(features, dtype=np.float32),
         np.asarray(targets, dtype=np.float32),
         np.asarray(groups),
+        np.asarray(sources),
         weights_array,
     )
+
+
+def _source_jackknife_decision_records(
+    rows: list[dict[str, Any]],
+    model_settings: dict[str, Any],
+) -> list[dict[str, float | str | bool]]:
+    source_ids = sorted({str(row["dataset_id"]) for row in rows})
+    if len(source_ids) < 2:
+        return []
+    records: list[dict[str, float | str | bool]] = []
+    for held_source in source_ids:
+        train_rows = [row for row in rows if str(row["dataset_id"]) != held_source]
+        held_rows = [row for row in rows if str(row["dataset_id"]) == held_source]
+        pair_features, pair_targets, _, _, pair_weights = _list_rank_training_arrays(train_rows)
+        model = HistGradientBoostingRegressor(**model_settings).fit(
+            pair_features,
+            pair_targets,
+            sample_weight=pair_weights,
+        )
+        for sample_id in sorted({str(row["sample_id"]) for row in held_rows}):
+            group = [row for row in held_rows if str(row["sample_id"]) == sample_id]
+            group.sort(key=lambda row: not bool(row["is_baseline"]))
+            feature_matrix = np.asarray(
+                [[float(row["features"][name]) for name in CANDIDATE_FEATURE_NAMES] for row in group],
+                dtype=np.float32,
+            )
+            _, list_scores = _list_candidate_scores(model, feature_matrix)
+            best_index = int(np.argmax(list_scores))
+            baseline = group[0]
+            best = group[best_index]
+            records.append(
+                {
+                    "dataset_id": held_source,
+                    "sample_id": sample_id,
+                    "candidate_available": best_index != 0,
+                    "decision_margin": float(list_scores[best_index] - list_scores[0]),
+                    "dice_gain": float(best["dice"]) - float(baseline["dice"]),
+                }
+            )
+    return records
+
+
+def _calibrate_source_decision_margin(
+    rows: list[dict[str, Any]],
+    model_settings: dict[str, Any],
+    contract: CandidateDecisionCalibrationContract,
+) -> dict[str, Any]:
+    records = _source_jackknife_decision_records(rows, model_settings)
+    return _select_source_decision_policy(records, contract)
+
+
+def _select_source_decision_policy(
+    records: list[dict[str, float | str | bool]],
+    contract: CandidateDecisionCalibrationContract,
+) -> dict[str, Any]:
+    source_ids = sorted({str(row["dataset_id"]) for row in records})
+    trials = []
+    for threshold in contract.threshold_grid:
+        source_gains: dict[str, float] = {}
+        source_override_rates: dict[str, float] = {}
+        for source_id in source_ids:
+            source_rows = [row for row in records if str(row["dataset_id"]) == source_id]
+            selected_gains = [
+                float(row["dice_gain"])
+                if bool(row["candidate_available"]) and float(row["decision_margin"]) > threshold
+                else 0.0
+                for row in source_rows
+            ]
+            source_gains[source_id] = float(np.mean(selected_gains)) if selected_gains else 0.0
+            source_override_rates[source_id] = float(
+                np.mean(
+                    [
+                        bool(row["candidate_available"]) and float(row["decision_margin"]) > threshold
+                        for row in source_rows
+                    ]
+                )
+            ) if source_rows else 0.0
+        macro_gain = float(np.mean(list(source_gains.values()))) if source_gains else 0.0
+        worst_gain = float(min(source_gains.values())) if source_gains else 0.0
+        trials.append(
+            {
+                "threshold": float(threshold),
+                "macro_dice_gain": macro_gain,
+                "worst_source_dice_gain": worst_gain,
+                "source_dice_gains": source_gains,
+                "source_override_rates": source_override_rates,
+                "eligible": bool(
+                    source_ids
+                    and macro_gain >= contract.minimum_macro_dice_gain
+                    and worst_gain >= -contract.max_source_dice_regression
+                ),
+            }
+        )
+    eligible = [trial for trial in trials if bool(trial["eligible"])]
+    selected = max(
+        eligible,
+        key=lambda trial: (
+            float(trial["macro_dice_gain"]),
+            float(trial["worst_source_dice_gain"]),
+            float(trial["threshold"]),
+        ),
+        default=None,
+    )
+    fallback_threshold = float(contract.threshold_grid[-1])
+    return {
+        "decision_calibration": "nested_source_jackknife_list_margin",
+        "decision_calibration_enabled": selected is not None,
+        "decision_margin_threshold": float(selected["threshold"]) if selected is not None else fallback_threshold,
+        "decision_calibration_macro_dice_gain": (
+            float(selected["macro_dice_gain"]) if selected is not None else 0.0
+        ),
+        "decision_calibration_worst_source_dice_gain": (
+            float(selected["worst_source_dice_gain"]) if selected is not None else 0.0
+        ),
+        "decision_calibration_source_dice_gains": (
+            dict(selected["source_dice_gains"]) if selected is not None else {}
+        ),
+        "decision_calibration_source_override_rates": (
+            dict(selected["source_override_rates"]) if selected is not None else {}
+        ),
+        "decision_calibration_threshold_grid": list(contract.threshold_grid),
+        "decision_calibration_minimum_macro_dice_gain": contract.minimum_macro_dice_gain,
+        "decision_calibration_max_source_dice_regression": contract.max_source_dice_regression,
+        "decision_calibration_trials": trials,
+    }
+
+
+def _source_balanced_quantile(
+    values: np.ndarray,
+    sources: np.ndarray,
+    quantile: float,
+) -> float:
+    """Quantile of an equal-weight mixture of empirical source distributions."""
+
+    values = np.asarray(values, dtype=np.float64)
+    sources = np.asarray(sources)
+    if values.ndim != 1 or sources.shape != values.shape or not 0.0 <= quantile <= 1.0:
+        raise ValueError("source-balanced quantile inputs are invalid")
+    unique_sources = sorted(set(sources.tolist()))
+    if not unique_sources or values.size == 0:
+        raise ValueError("source-balanced quantile requires observations")
+    weights = np.zeros(values.size, dtype=np.float64)
+    for source in unique_sources:
+        selected = sources == source
+        weights[selected] = 1.0 / len(unique_sources) / max(1, int(selected.sum()))
+    order = np.argsort(values, kind="stable")
+    cumulative = np.cumsum(weights[order])
+    index = min(len(order) - 1, int(np.searchsorted(cumulative, quantile, side="left")))
+    return float(values[order[index]])
+
+
+def _residual_quantiles_by_source(
+    values: np.ndarray,
+    sources: np.ndarray,
+    quantile: float,
+) -> dict[str, float]:
+    values = np.asarray(values, dtype=np.float64)
+    sources = np.asarray(sources)
+    return {
+        str(source): float(np.quantile(values[sources == source], quantile))
+        for source in sorted(set(sources.tolist()))
+    }
 
 
 def _balanced_row_weights(rows: list[dict[str, Any]]) -> np.ndarray:
@@ -1236,12 +1570,13 @@ def _candidate_report(model_path: Path, overall: dict[str, Any], folds: list[dic
         "",
         f"- Development candidate model: `{model_path}`",
         f"- Selection strategy: `{overall['selection_strategy']}`",
+        f"- Risk calibration: `{overall['risk_calibration']}`",
         f"- Minimum absolute-head IoU gain: `{overall['minimum_expected_iou_gain']}`",
         f"- Coverage gate metric: `{overall['coverage_metric']}`",
         f"- Promotion passed: `{bool(overall['promotion_passed'])}`",
         "",
-        "| Dataset | Images | Baseline Dice | Selected Dice | Delta | Oracle Dice | Regret | Precision | Recall | Area Ratio | Override Rate | IoU Spearman | List Spearman | MAE | IoU Coverage | Pair Coverage | Search Recall | Search Area |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Dataset | Images | Baseline Dice | Selected Dice | Delta | Oracle Dice | Regret | Precision | Recall | Area Ratio | Override Rate | Decision Threshold | Inner Gain | Inner Worst | Gain Residual | IoU Spearman | List Spearman | MAE | IoU Coverage | Pair Coverage | Search Recall | Search Area |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for fold in folds:
         lines.append(
@@ -1250,6 +1585,10 @@ def _candidate_report(model_path: Path, overall: dict[str, Any], folds: list[dic
             f"`{fold['oracle_dice']:.4f}` | `{fold['selection_regret']:.4f}` | "
             f"`{fold['selected_precision']:.4f}` | `{fold['selected_recall']:.4f}` | "
             f"`{fold['selected_area_ratio']:.4f}` | `{fold['override_rate']:.4f}` | "
+            f"`{fold['decision_margin_threshold']}` | "
+            f"`{fold['decision_calibration_macro_dice_gain']:.4f}` | "
+            f"`{fold['decision_calibration_worst_source_dice_gain']:.4f}` | "
+            f"`{fold['gain_residual_q90']:.4f}` | "
             f"`{fold['expected_iou_spearman']:.4f}` | `{fold['within_image_rank_spearman']:.4f}` | "
             f"`{fold['expected_iou_mae']:.4f}` | `{fold['conformal_coverage']:.4f}` | "
             f"`{fold['pairwise_conformal_coverage']:.4f}` | `{fold['search_region_recall']:.4f}` | "

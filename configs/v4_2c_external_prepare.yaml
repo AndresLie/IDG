@@ -1,0 +1,66 @@
+project:
+  output_dir: outputs/v4_2c_external_prepare
+  report_dir: reports/v4_2c_external_prepare
+
+dataset:
+  root: data/v4_external_runtime
+  download: false
+  seed: 20260810
+  adaptation_per_defect: 2
+  targets:
+    btad_01: [bad]
+    btad_02: [bad]
+    btad_03: [bad]
+    ksdd2: [bad]
+
+generation:
+  samples_per_category: 1
+  seed: 20260810
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect: {}
+  negative_prompt: "text, watermark, logo, unrealistic artifact"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation: {}
+
+external_benchmarks:
+  development:
+    reference_root: data/v4_external_reference
+    preregistration_path: research_protocols/v4_2c_external_development.yaml
+    seed: 20260810
+    sources:
+      - dataset_id: btad
+        layout: btad
+        archive_url: https://avires.dimi.uniud.it/papers/btad/btad.zip
+        archive_path: data/v4_external_source/_archives/btad.zip
+        archive_size: 1229193337
+        archive_sha256: '461c9387e515bfed41ecaae07c50cf6b10def647b36c9e31d239ab2736b10d2a'
+        license: CC-BY-SA
+        max_train_good_per_category: 16
+        max_test_anomaly_per_category: 20
+      - dataset_id: ksdd2
+        layout: ksdd2
+        archive_url: https://go.vicos.si/kolektorsdd2
+        archive_path: data/v4_external_source/_archives/ksdd2.zip
+        archive_size: 853126555
+        archive_sha256: 'edcdb486809b24f1d17b785e30c52fafc5999554dd5fe18ddf77b61ceb6f36a8'
+        license: CC-BY-NC-SA-4.0
+        max_train_good_per_category: 16
+        max_test_anomaly_per_category: 60
+
+research_governance:
+  enabled: true
+  architecture_tag: v4.2c-external-development-preparation
+  experiment_track: exposed-multidataset-selective-risk
+  development_categories: [btad_01, btad_02, btad_03, ksdd2]
+  locked_categories: []
+  locked_official_mask_roots: [data/v4_external_reference]
+  enforce_official_mask_isolation: true
+  dataset_fingerprint_mode: sha256

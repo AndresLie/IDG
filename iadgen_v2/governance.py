@@ -44,6 +44,7 @@ COMMAND_POLICIES = {
     "locked-evaluate": "official-evaluation",
     "prepare-locked-benchmark": "official-preparation",
     "prepare-visa-benchmark": "official-preparation",
+    "prepare-external-development": "official-preparation",
     "freeze-architecture": "runtime",
     "reseal-architecture": "runtime",
     "r6-evidence-package": "runtime",
@@ -552,6 +553,26 @@ def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[
                 record.update({"kind": "missing", "size": None, "sha256": None})
             records.append(record)
         return records
+    if command == "prepare-external-development":
+        external = config.data.get("external_benchmarks", {})
+        development = external.get("development", {}) if isinstance(external, dict) else {}
+        sources = development.get("sources", []) if isinstance(development, dict) else []
+        records = []
+        for index, source in enumerate(sources if isinstance(sources, list) else []):
+            if not isinstance(source, dict) or not source.get("archive_path"):
+                continue
+            path = config.resolve_path(str(source["archive_path"]))
+            record = {
+                "config_key": f"external_benchmarks.development.sources[{index}].archive_path",
+                "configured_sha256": str(source.get("archive_sha256", "")) or None,
+                "path": str(path),
+            }
+            if path.is_file():
+                record.update(_artifact_record(path))
+            else:
+                record.update({"kind": "missing", "size": None, "sha256": None})
+            records.append(record)
+        return records
     if command == "phase5-evaluate":
         phase5 = config.data.get("phase5", {})
         if not isinstance(phase5, dict) or not phase5.get("synthetic_metadata_path"):
@@ -597,6 +618,16 @@ def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[
             if posterior_value:
                 path = config.resolve_path(str(posterior_value))
                 record = {"config_key": f"{section}.posterior_model_path", "path": str(path)}
+                if path.is_file():
+                    record.update(_artifact_record(path))
+                else:
+                    record.update({"kind": "missing", "size": None, "sha256": None})
+                records.append(record)
+            governance = config.data.get("research_governance", {})
+            protocol_value = governance.get("protocol_path") if isinstance(governance, dict) else None
+            if protocol_value:
+                path = config.resolve_path(str(protocol_value))
+                record = {"config_key": "research_governance.protocol_path", "path": str(path)}
                 if path.is_file():
                     record.update(_artifact_record(path))
                 else:
