@@ -37,6 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         "auto-masks-reselect",
         "auto-mask-train-selector",
         "auto-mask-train-posterior",
+        "auto-mask-train-candidate-calibrator",
     ):
         sub = commands.add_parser(command)
         sub.add_argument("--config", required=True, type=Path)
@@ -158,6 +159,10 @@ def _execute_command(args: argparse.Namespace, config: AppConfig, manifest_path:
         from iadgen_v2.auto_mask.posterior_calibration import train_score_to_mask_calibrator
 
         return "posterior calibration manifest written to", train_score_to_mask_calibrator(config)
+    if args.command == "auto-mask-train-candidate-calibrator":
+        from iadgen_v2.auto_mask.candidate_calibration import train_cross_dataset_candidate_calibrator
+
+        return "candidate calibration manifest written to", train_cross_dataset_candidate_calibrator(config)
     if args.command == "prepare":
         download = False if args.no_download else None
         return "split manifest written to", prepare_splits(config, download=download)

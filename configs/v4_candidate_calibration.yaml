@@ -1,0 +1,96 @@
+project:
+  output_dir: outputs/v4_candidate_calibration
+  report_dir: reports/v4_candidate_calibration
+
+dataset:
+  root: data/mvtec_ad
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    bottle: [broken_large, broken_small, contamination]
+    zipper: [broken_teeth, combined, fabric_border, fabric_interior, rough, split_teeth, squeezed_teeth]
+    wood: [color, combined, hole, liquid, scratch]
+    metal_nut: [bent, color, flip, scratch]
+    tile: [crack, glue_strip, gray_stroke, oil, rough]
+
+generation:
+  samples_per_category: 10
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect: {}
+  negative_prompt: "text, watermark, logo, unrealistic artifact"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation:
+  visibility_threshold: 0.02
+  segmentation_metrics:
+    threshold: 0.5
+
+research_governance:
+  enabled: true
+  architecture_tag: v4-candidate-calibration-development
+  experiment_track: exposed-multidataset-candidate-calibration
+  development_categories:
+    - bottle
+    - zipper
+    - wood
+    - metal_nut
+    - tile
+  locked_categories: []
+  enforce_official_mask_isolation: true
+  dataset_fingerprint_mode: sha256
+
+auto_masks:
+  architecture: generic_evidence
+  specialists: disabled
+  provider: qwen
+  posterior_model_path: outputs/v4_score_to_mask_calibration/auto_masks/posterior/score_to_mask.joblib
+  candidate_calibrator_model_path: outputs/v4_candidate_calibration/auto_masks/selector/cross_dataset_candidate_calibrator.joblib
+  generic_evidence:
+    posterior_enabled: false
+    posterior_override_eval: false
+    candidate_calibration_enabled: false
+
+candidate_calibration:
+  seed: 20260810
+  posterior_model_path: outputs/v4_score_to_mask_calibration/auto_masks/posterior/score_to_mask.joblib
+  model_output_path: outputs/v4_candidate_calibration/auto_masks/selector/cross_dataset_candidate_calibrator.joblib
+  report_dir: reports/v4_candidate_calibration/candidate_calibration
+  validation_size: 256
+  max_iter: 160
+  max_leaf_nodes: 15
+  learning_rate: 0.06
+  l2_regularization: 0.20
+  candidate_quantiles: [0.85, 0.90, 0.95, 0.975]
+  max_components_per_quantile: 4
+  min_component_area: 8
+  localization_envelope: true
+  minimum_gain_lower_bound: 0.0
+  minimum_macro_dice_gain: 0.01
+  target_spearman: 0.40
+  target_mae: 0.12
+  target_coverage_min: 0.85
+  target_coverage_max: 0.95
+  target_search_recall: 0.85
+  max_dataset_dice_regression: 0.02
+  sources:
+    - dataset_id: mvtec_development
+      metadata_path: outputs/as1b_calib_widen/auto_masks/qwen/metadata.jsonl
+      runtime_root: data/mvtec_ad
+      reference:
+        kind: mvtec
+        root: data/mvtec_ad
+    - dataset_id: visa_exposed
+      metadata_path: outputs/v3_generic_evidence_visa/auto_masks/qwen/metadata.jsonl
+      runtime_root: data/visa_runtime
+      reference:
+        kind: manifest
+        manifest_path: data/visa_official_reference_masks/visa_reference_manifest.jsonl

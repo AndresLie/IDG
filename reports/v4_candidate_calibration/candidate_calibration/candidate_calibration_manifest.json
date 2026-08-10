@@ -1,0 +1,30 @@
+{
+  "metrics_path": "/home/p76147019/ImgGen/v2/reports/v4_candidate_calibration/candidate_calibration/leave_dataset_out_candidate_metrics.json",
+  "metrics_sha256": "f71cbb576c109745b3daf2e1c77180b6bb6eb2ff9e750e8917e7c964411924a4",
+  "model_path": "/home/p76147019/ImgGen/v2/outputs/v4_candidate_calibration/auto_masks/selector/cross_dataset_candidate_calibrator.joblib",
+  "model_sha256": "477b838048681144465f69fc569a2b15db69e43bde2705bf97ae685e3be88451",
+  "promotion_passed": false,
+  "report_path": "/home/p76147019/ImgGen/v2/reports/v4_candidate_calibration/candidate_calibration/candidate_calibration_report.md",
+  "report_sha256": "f9677cba9d788e78688f90e9c39043fb733317082e9bf816a8918c6c93f556a4",
+  "schema_version": 1,
+  "sources": [
+    {
+      "dataset_id": "mvtec_development",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/as1b_calib_widen/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "27487bdb7a0c0466e82987aa854233dd962719ac5df74718d4d277e36e3c3189",
+      "reference_kind": "mvtec",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/mvtec_ad",
+      "reference_sha256": null,
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/mvtec_ad"
+    },
+    {
+      "dataset_id": "visa_exposed",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/v3_generic_evidence_visa/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "7a086751bbc4609fdfc9a01096d2b6258c173809738d30f889f2a436d99489e3",
+      "reference_kind": "manifest",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/visa_official_reference_masks/visa_reference_manifest.jsonl",
+      "reference_sha256": "cb19d9e379b1bcfc4546e5103a2452fa85d83e9f758f501e9c431a2ff43ad693",
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/visa_runtime"
+    }
+  ]
+}

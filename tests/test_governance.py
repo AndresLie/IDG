@@ -289,6 +289,44 @@ def test_posterior_training_manifest_hashes_calibration_inputs(tmp_path: Path) -
     ]
 
 
+def test_candidate_training_manifest_hashes_sources_and_posterior(tmp_path: Path) -> None:
+    metadata = tmp_path / "metadata.jsonl"
+    reference = tmp_path / "references.jsonl"
+    posterior = tmp_path / "posterior.joblib"
+    metadata.write_bytes(b"metadata")
+    reference.write_bytes(b"references")
+    posterior.write_bytes(b"posterior")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    config.data["candidate_calibration"] = {
+        "posterior_model_path": str(posterior),
+        "sources": [
+            {
+                "dataset_id": "development",
+                "metadata_path": str(metadata),
+                "reference": {"kind": "manifest", "manifest_path": str(reference)},
+            }
+        ],
+    }
+
+    records = configured_artifact_inventory(config, "auto-mask-train-candidate-calibrator")
+
+    assert [row["config_key"] for row in records] == [
+        "candidate_calibration.sources[0].metadata_path",
+        "candidate_calibration.sources[0].reference.manifest_path",
+        "candidate_calibration.posterior_model_path",
+    ]
+    assert [row["sha256"] for row in records] == [
+        hashlib.sha256(b"metadata").hexdigest(),
+        hashlib.sha256(b"references").hexdigest(),
+        hashlib.sha256(b"posterior").hexdigest(),
+    ]
+
+
 def test_generalization_contracts_validate_shapes_confidence_and_disposition() -> None:
     values = np.zeros((8, 8), dtype=np.float32)
     evidence = EvidenceMap(source="normal_memory", values=values, reliability=0.8)

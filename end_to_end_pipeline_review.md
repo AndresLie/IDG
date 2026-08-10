@@ -139,6 +139,23 @@ V4.1 therefore fails promotion. Its main scientific result is that pixel-field
 calibration is insufficient for safe arbitration; V4.2 must operate on real
 candidate quality and localization reliability.
 
+### V4.2 Candidate Calibration Result
+
+V4.2 reconstructs category-agnostic candidate pools from retained fused fields
+and applies dataset-excluded candidate calibration with a guarded V3 fallback.
+It also builds an evidence-proposal localization envelope.
+
+| Dataset | V3 Dice | V4.2 Dice | Oracle Dice | Spearman | MAE | Coverage | Search Recall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| MVTec development | `0.5889` | `0.5786` | `0.6539` | `0.7481` | `0.0835` | `0.9194` | `0.9191` |
+| VisA exposed | `0.1593` | `0.1593` | `0.3583` | `0.5650` | `0.0854` | `0.7601` | `0.9682` |
+
+The candidate ceiling and localization recall are substantially better than the
+selected-mask result, but the calibrator does not convert them into mask
+utility. Global candidate ranking is reasonably calibrated while within-image
+pair ranking fails to transfer: no VisA alternatives pass the safe gain guard.
+V4.2 remains default-off and does not justify another locked run.
+
 ## Professional Assessment
 
 ### What Is Strong

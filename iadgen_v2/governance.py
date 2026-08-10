@@ -24,6 +24,7 @@ COMMAND_POLICIES = {
     "auto-masks-reselect": "runtime",
     "auto-mask-train-selector": "runtime",
     "auto-mask-train-posterior": "development-training",
+    "auto-mask-train-candidate-calibrator": "development-training",
     "development-evaluate": "runtime",
     "generate": "runtime",
     "evaluate": "runtime",
@@ -187,6 +188,9 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
     posterior_value = auto.get("posterior_model_path")
     posterior_path = config.resolve_path(str(posterior_value)) if posterior_value else None
     posterior_hash = _sha256_file(posterior_path) if posterior_path is not None and posterior_path.is_file() else None
+    candidate_value = auto.get("candidate_calibrator_model_path")
+    candidate_path = config.resolve_path(str(candidate_value)) if candidate_value else None
+    candidate_hash = _sha256_file(candidate_path) if candidate_path is not None and candidate_path.is_file() else None
     excluded_operational_keys = {
         "artifact_retention",
         "contact_sheet_max_rows",
@@ -225,6 +229,7 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
         },
         "selector_sha256": selector_hash,
         "posterior_model_sha256": posterior_hash,
+        "candidate_calibrator_sha256": candidate_hash,
         "code": code_inventory(config)["content_fingerprint"],
     }
     return fingerprint(core)
@@ -562,8 +567,9 @@ def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[
         else:
             record.update({"kind": "missing", "size": None, "sha256": None})
         return [record]
-    if command == "auto-mask-train-posterior":
-        settings = config.data.get("posterior_calibration", {})
+    if command in {"auto-mask-train-posterior", "auto-mask-train-candidate-calibrator"}:
+        section = "posterior_calibration" if command == "auto-mask-train-posterior" else "candidate_calibration"
+        settings = config.data.get(section, {})
         sources = settings.get("sources", []) if isinstance(settings, dict) else []
         records = []
         for index, source in enumerate(sources if isinstance(sources, list) else []):
@@ -578,9 +584,19 @@ def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[
                     continue
                 path = config.resolve_path(str(value))
                 record = {
-                    "config_key": f"posterior_calibration.sources[{index}].{key}",
+                    "config_key": f"{section}.sources[{index}].{key}",
                     "path": str(path),
                 }
+                if path.is_file():
+                    record.update(_artifact_record(path))
+                else:
+                    record.update({"kind": "missing", "size": None, "sha256": None})
+                records.append(record)
+        if command == "auto-mask-train-candidate-calibrator" and isinstance(settings, dict):
+            posterior_value = settings.get("posterior_model_path")
+            if posterior_value:
+                path = config.resolve_path(str(posterior_value))
+                record = {"config_key": f"{section}.posterior_model_path", "path": str(path)}
                 if path.is_file():
                     record.update(_artifact_record(path))
                 else:
@@ -610,7 +626,13 @@ def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[
     if not isinstance(auto, dict):
         return []
     records: list[dict[str, Any]] = []
-    for key in ("selector_model_path", "posterior_model_path", "sam2_checkpoint", "sam_checkpoint"):
+    for key in (
+        "selector_model_path",
+        "posterior_model_path",
+        "candidate_calibrator_model_path",
+        "sam2_checkpoint",
+        "sam_checkpoint",
+    ):
         value = auto.get(key)
         if not value:
             continue
