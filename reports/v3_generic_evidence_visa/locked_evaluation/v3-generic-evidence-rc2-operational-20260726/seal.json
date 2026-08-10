@@ -1,0 +1,27 @@
+{
+  "architecture_tag": "v3-generic-evidence-rc2-operational-20260726",
+  "metrics_csv": {
+    "path": "/home/p76147019/ImgGen/v2/reports/v3_generic_evidence_visa/locked_evaluation/v3-generic-evidence-rc2-operational-20260726/locked_metrics.csv",
+    "sha256": "d18499a70a5864e58cfd269b1a09a4170e969fe39ba9e05f91190d7b6f868d83",
+    "size": 258271
+  },
+  "reference_manifest": {
+    "path": "/home/p76147019/ImgGen/v2/data/visa_official_reference_masks/visa_reference_manifest.jsonl",
+    "sha256": "cb19d9e379b1bcfc4546e5103a2452fa85d83e9f758f501e9c431a2ff43ad693",
+    "size": 495300
+  },
+  "report": {
+    "path": "/home/p76147019/ImgGen/v2/reports/v3_generic_evidence_visa/locked_evaluation/v3-generic-evidence-rc2-operational-20260726/locked_evaluation_report.md",
+    "sha256": "8d34dad1d14f63fc7d2db3acd1ec204ec0f6648ab4d8a7dfd5e8786cb075b9b7",
+    "size": 1510
+  },
+  "rerun_forbidden": true,
+  "runtime_manifest": {
+    "path": "/home/p76147019/ImgGen/v2/outputs/v3_generic_evidence_visa/auto_masks/qwen/metadata.jsonl",
+    "sha256": "7a086751bbc4609fdfc9a01096d2b6258c173809738d30f889f2a436d99489e3",
+    "size": 82202984
+  },
+  "sealed_at_utc": "2026-08-10T07:07:46.468800+00:00",
+  "started_at_utc": "2026-08-10T06:35:33.968411+00:00",
+  "status": "complete"
+}

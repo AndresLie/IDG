@@ -94,6 +94,30 @@ fresh artifacts and visual reports. It does not yet prove the final research
 claim because the tiny-U-Net scaffold remains poorly calibrated and the full
 Phase 9 matrix was too broad for an interactive run.
 
+### Locked VisA Generalization Result
+
+The later category-agnostic `v3-generic-evidence-rc2-operational-20260726`
+architecture completed a governed 1,200-image VisA run and one sealed locked
+evaluation. This is now the strongest evidence about auto-mask versatility:
+
+| Locked VisA Metric | Result |
+| --- | ---: |
+| Category-macro Dice | `0.1593` |
+| 95% category-bootstrap interval | `[0.0941, 0.2503]` |
+| Macro precision | `0.1419` |
+| Macro recall | `0.7488` |
+| Macro search-region recall | `0.5898` |
+| Macro pixel AP | `0.2085` |
+| Macro AUPRO | `0.8717` |
+| Accepted-mask coverage | `0.5267` |
+
+Only chewing-gum exceeds `0.30` Dice. The architecture retains useful ranked
+anomaly evidence but over-segments: selected masks cover `5.24%` of pixels on
+average versus an estimated `0.96%` true defect area. Selector expected-IoU
+Spearman correlation is only `0.0851`. Therefore the current generic auto-mask
+path is not a versatile zero-shot mask generator, and generation Sprint 6 is
+blocked until a new calibration-first architecture passes a new locked test.
+
 ## Professional Assessment
 
 ### What Is Strong
@@ -974,9 +998,18 @@ reports/auto_mask_phase9_wood/phase10_mask_quality/qwen/mask_quality_ablation_re
 
 ## Final Judgment
 
-The current architecture is strong enough to support a serious experiment, and
-the targeted Phase 9 run proves the real Qwen/SD1.5 pipeline can execute through
-generation, selection, evaluation, and visual reporting.
+The completed locked VisA evaluation supersedes the earlier architecture-level
+optimism for general zero-shot use. The pipeline remains a credible and well-
+governed research prototype, but its current generic auto-mask output is not
+release-ready: macro Dice is `0.1593`, precision is `0.1419`, and all five
+predeclared generalization gates fail. High AUPRO does not rescue the broad,
+poorly calibrated binary masks.
+
+The pipeline infrastructure is strong enough to support serious controlled
+experiments, and the targeted Phase 9 run proves the real Qwen/SD1.5 path can
+execute through generation, selection, evaluation, and visual reporting. This
+engineering readiness must not be read as evidence that the current generic
+auto-mask architecture generalizes.
 
 The current auto-mask generator is also meaningfully better than before:
 `000` is treated as an uncertainty-aware soft pseudo-label instead of a fake
@@ -1045,7 +1078,7 @@ research claim
 The best current characterization is:
 
 ```text
-research-grade pipeline architecture implemented;
+research-grade execution and governance architecture implemented;
 uncertainty-aware auto-mask path implemented and visually validated;
 uncertainty-aware training/evaluation loss path implemented and test-covered;
 mask-quality ablation runner implemented for hard/vote-soft/calibrated-soft policy comparison;
@@ -1062,5 +1095,8 @@ repeated-seed current-best validation run and reviewed;
 final repeated-seed evidence package created with a compact artifact manifest;
 auto-mask evidence co-located by reference for wood, bottle, and zipper;
 boundary/area regularizers implemented, tested, and kept as experimental switches;
-final research evidence pending consolidated visual appendix, mask-policy inspection cleanup, and full-matrix/report packaging.
+locked VisA generalization evaluated and rejected at 0.1593 macro Dice;
+generation promotion blocked by the failed mask gate;
+next architecture must be calibration-first and validated leave-dataset-out
+before one evaluation on a new untouched benchmark.
 ```

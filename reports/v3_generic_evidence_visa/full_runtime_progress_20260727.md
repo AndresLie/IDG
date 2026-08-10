@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 1,115
-progress: 92.92%
+runtime samples completed: 1,200
+progress: 100.00%
 ```
 
 ## Resume Validation
@@ -258,22 +258,36 @@ A twenty-seventh bounded command:
 - removed its single fused-evidence artifact, leaving exactly 14 readable PNGs
   for every durable row and preserving the sealed reference boundary.
 
-Current checkpoint:
+The twenty-eighth and final command:
+
+- resumed all 1,115 checkpoint rows and incremented `resume_count` to 28;
+- completed the remaining 85 pipe_fryum rows without interruption;
+- atomically published the stable 1,200-row metadata manifest;
+- preserved the original run ID and both frozen fingerprints;
+- left no partial checkpoint, temporary metadata, missing artifact, or orphan;
+- completed before the official VisA reference masks were opened.
+
+Final run-local metadata:
 
 ```text
 outputs/v3_generic_evidence_visa/auto_masks/qwen/runs/
-  20260726T160703Z-fcd6745c/metadata.partial.jsonl
+  20260726T160703Z-fcd6745c/metadata.jsonl
 ```
 
-The stable runtime manifest has not been published, which is correct for an
-incomplete locked run.
+The stable runtime manifest is now published at:
+
+```text
+outputs/v3_generic_evidence_visa/auto_masks/qwen/metadata.jsonl
+```
+
+Its content is byte-identical to the run-local metadata manifest.
 
 ## Runtime Projection
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `1,115 / 1,200` |
-| Current run artifacts | `5,014.4 MiB` |
+| Completed rows | `1,200 / 1,200` |
+| Current run artifacts | `5,338.9 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -323,20 +337,20 @@ incomplete locked run.
 | Twenty-sixth-vs-primary twenty-fifth rate change | `+7.14%` |
 | Twenty-seventh-segment rate, 45 transition rows | `20.502 s/image` |
 | Twenty-seventh-vs-twenty-sixth rate change | `+2.85%` |
-| Cumulative productive rate including recovery | `21.158 s/image` |
-| Projected remaining compute | approximately `0.50 hours` |
-| Projected total compute | approximately `7.05 hours` |
-| Linear artifact projection | approximately `5.27 GiB` |
-| Free storage after checkpoint | approximately `7.92 GiB` |
+| Final-segment rate, 85 pipe_fryum rows | `20.385 s/image` |
+| Final-vs-twenty-seventh rate change | `-0.57%` |
+| Final cumulative productive rate including recovery | `21.103 s/image` |
+| Total productive compute | approximately `7.03 hours` |
+| Final retained footprint | approximately `5.21 GiB` |
+| Free storage after completion | approximately `6.36 GiB` |
 
 The zero-row restricted-sandbox attempt is excluded from productive throughput.
-The projection is operational only. Category transitions and cache reuse may
-change the final rate and footprint.
+Historical segment projections were operational estimates; the final rates and
+footprint above are measured from the completed cohort.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains eleven complete categories plus the first 15
-pipe_fryum anomalies:
+The sealed cohort contains all 12 complete categories:
 
 ```text
 candle: 100
@@ -350,33 +364,33 @@ pcb1: 100
 pcb2: 100
 pcb3: 100
 pcb4: 100
-pipe_fryum: 15
+pipe_fryum: 100
 
 needs_review: 568
-soft_mask_only: 547
-hard_mask_ok: 0
+soft_mask_only: 631
+hard_mask_ok: 1
 ```
 
-Selected proposal modes over all 1,115 rows:
+Selected proposal modes over all 1,200 rows:
 
 ```text
 fused_q975: 207
 fused_q950: 188
 fused_q900: 72
-fused_q950_component_1: 60
+fused_q950_component_1: 63
 fused_q975_component_1: 19
-fused_q900_component_1: 85
-fused_q850_component_1: 134
+fused_q900_component_1: 119
+fused_q850_component_1: 155
 fused_q850: 18
-sam2_fused_q850_1: 50
-edge_fused_q900_component_1_2: 24
-edge_fused_q850_component_1_1: 22
+sam2_fused_q850_1: 57
+edge_fused_q900_component_1_2: 29
+edge_fused_q850_component_1_1: 23
 edge_fused_q900_component_1_1: 5
-edge_fused_q850_component_1_2: 49
-fused_q900_component_2: 26
-edge_fused_q850_1: 15
+edge_fused_q850_component_1_2: 58
+fused_q900_component_2: 27
+edge_fused_q850_1: 16
 edge_fused_q850_2: 48
-edge_fused_q900_1: 19
+edge_fused_q900_1: 22
 edge_fused_q900_2: 29
 fused_q850_component_2: 26
 edge_fused_q900_component_2_2: 5
@@ -964,18 +978,32 @@ structure profile: ring_sector 15/15
 
 Ten of the 15 rows select `fused_q900_component_1`. Confidence remains high on
 the one localization fallback, consistent with the soft-prior architecture.
-The small opening slice and concentrated selected mode are transfer diagnostics,
-not evidence that pipe_fryum masks are accurate.
 
-These are serious confidence-transfer warnings, but they are not official mask
-quality measurements. The preregistered run must complete before opening
-official masks or changing selector thresholds.
-
-Checkpoint integrity:
+The final 85 pipe_fryum rows increase calibrated confidence further:
 
 ```text
-partial metadata SHA-256:
-ad3e05bf745f76a35b68834915e0ab2146c96681d889f9f6d91295056a497bb5
+soft_mask_only: 84/85
+hard_mask_ok: 1/85
+mean expected IoU: 0.5255
+mean conformal IoU lower bound: 0.3900
+mean source disagreement: 0.4775
+mean selected-mask area: 0.0851
+Qwen valid localization: 67/85
+Qwen full-image fallback: 18/85
+structure profile: ring_sector 85/85
+```
+
+Completed pipe_fryum contains 99 soft-mask decisions and one hard-mask
+decision. Mean expected IoU is `0.5181`, mean lower bound is `0.3827`, and 44
+rows select `fused_q900_component_1`. This was the strongest unscored confidence
+regime in the cohort. The locked result below shows that confidence did not
+transfer to binary-mask quality.
+
+Final runtime integrity before reference-mask access:
+
+```text
+stable metadata SHA-256:
+7a086751bbc4609fdfc9a01096d2b6258c173809738d30f889f2a436d99489e3
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
@@ -984,14 +1012,55 @@ auto-mask fingerprint:
 8aceb1c68c1f8c76b256252938208e4292863a4a7dedf035878a52a700b61fd2
 ```
 
-## Next Execution
+The stable and run-local metadata files are byte-identical. All 1,200 sample
+identities are unique, all 16,800 retained PNGs are referenced and readable,
+and no partial or temporary checkpoint remains.
 
-Resume with the unchanged code and configuration:
+## Locked Result
 
-```bash
-python -m iadgen_v2.cli auto-masks \
-  --config configs/v3_generic_evidence_visa.yaml
+The one permitted locked evaluation completed and sealed its runtime,
+reference, metric, and report hashes before any analysis-driven change.
+
+| Locked target | Required | Observed | Result |
+| --- | ---: | ---: | --- |
+| Category-macro Dice | `>= 0.55` | `0.1593` | fail |
+| Every-category Dice | `>= 0.30` | `1/12` categories pass | fail |
+| Macro search-region recall | `>= 0.90` | `0.5898` | fail |
+| Development-to-locked Dice gap | `<= 0.10` | `0.3495` | fail |
+| Accepted-mask coverage | `>= 0.75` | `0.5267` | fail |
+
+The category-bootstrap 95% interval for macro Dice is `[0.0941, 0.2503]`.
+Chewing-gum is the only category above `0.30` Dice (`0.5897`). Macaroni1 and
+macaroni2 are the worst categories at `0.0271` and `0.0266`.
+
+The dominant failure is excess area and non-transferable selection confidence:
+
+```text
+macro precision: 0.1419
+macro recall: 0.7488
+mean predicted positive rate: 0.0524
+mean true positive rate: 0.0096
+expected-IoU MAE: 0.2183
+expected-IoU Spearman correlation: 0.0851
+conformal lower-bound coverage: 0.3458
+accepted Dice: 0.1830
+needs-review Dice: 0.1329
 ```
 
-Any package-code, selector, checkpoint, model, or behavioral-config change will
-correctly invalidate this checkpoint and start a fresh cohort.
+The fused ranking field remains informative (`0.8717` macro AUPRO), but pixel
+AP is only `0.2085` and published masks are about 5.5 times larger than the true
+defect area on average. The architecture therefore has useful local anomaly
+ranking in some categories but fails to convert it into calibrated, compact
+binary pseudo-labels.
+
+## Next Decision
+
+Do not run the generation/downstream Sprint 6 on these masks. Sprint 5's locked
+generalization gate failed, and VisA is now exposed. Any improvement informed by
+this result must become a new architecture version and treat VisA as development
+data; a future generalization claim requires a new untouched external benchmark.
+
+The immediate research priority is a class-agnostic score-to-mask calibration
+stage trained leave-dataset-out, followed by selector recalibration on real
+candidate masks, foreground-boundary suppression, and multi-proposal
+localization. Category-name rules remain prohibited.

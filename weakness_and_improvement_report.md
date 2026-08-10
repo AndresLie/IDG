@@ -262,7 +262,7 @@ The claim ledger reaches a deliberately bounded conclusion:
 | Generic auto-mask system is release-ready | rejected | locked macro Dice `0.3171`; search recall `0.7162` |
 | Critic arbitration improves perceptual generation | provisional | automated visibility `+0.0289 [0.0110,0.0487]`; human review pending |
 | Synthetic augmentation improves independent segmentation | rejected | deterministic pixel AP `-0.0015 [-0.0414,+0.0403]` |
-| External-dataset generalization / state of the art | not tested | VisA runtime ready; full external inference/evaluation pending |
+| External-dataset generalization / state of the art | rejected on VisA | locked macro Dice `0.1593`; only one of 12 categories reaches `0.30` |
 
 R6 also makes the failure structure explicit:
 
@@ -372,8 +372,8 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Twenty-seven bounded inference executions and
-one short orphan-recovery finalizer have completed `1,115/1,200` runtime images
+At the penultimate checkpoint, 27 bounded inference executions and one short
+orphan-recovery finalizer had completed `1,115/1,200` runtime images
 under the same run ID. The twenty-seven resume operations
 reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, `291`, and then `355`
 and `415`, then `463`, `506`, `540`, and `575` checkpoint rows without
@@ -381,8 +381,8 @@ duplication, followed by `611`, then `655` twice: one zero-row
 environment-isolation attempt and one productive resume, followed by `696`,
 `745`, `791`, `833`, `878`, `925`, `976`, the recovered `1,024`-row temporary
 checkpoint, `1,025`, and `1,070`. Exact productive throughput including
-recovery is `21.158 s/image`, projecting about `0.50` additional hours and a
-`5.27 GiB` final run footprint. The checkpoint contains complete candle,
+recovery was `21.158 s/image`, projecting about `0.50` additional hours and a
+`5.27 GiB` final run footprint. That checkpoint contained complete candle,
 capsule, cashew, chewing-gum, fryum, macaroni1, macaroni2, pcb1, pcb2, pcb3, and
 pcb4 categories plus 15 pipe_fryum rows, with 568 `needs_review` and 547
 `soft_mask_only` decisions. Whole-category chewing-gum
@@ -453,10 +453,43 @@ evidence artifact. Both incomplete units were removed, leaving exactly 14
 readable PNGs per durable row. Atomic temporary-file publication remains a
 next-RC requirement.
 
-This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 0.50-hour remaining VisA inference, run the
-one-shot locked evaluation, then acquire dependencies for the remaining
-external reproductions.
+The frozen VisA run is now complete. The final command resumed 1,115 rows,
+finished all 1,200 runtime samples, and atomically published stable metadata
+with SHA-256
+`7a086751bbc4609fdfc9a01096d2b6258c173809738d30f889f2a436d99489e3`.
+The stable and run-local metadata are byte-identical; all 16,800 retained PNGs
+are referenced and readable, with no duplicate identity, orphan, partial, or
+temporary checkpoint.
+
+The one permitted locked evaluation then opened the official VisA masks and
+sealed its result. The generalization gate fails decisively:
+
+```text
+category-macro Dice: 0.1593 [0.0941, 0.2503]
+macro precision: 0.1419
+macro recall: 0.7488
+macro search-region recall: 0.5898
+macro pixel AP: 0.2085
+macro AUPRO: 0.8717
+accepted-mask coverage: 0.5267
+categories with Dice >= 0.30: 1/12
+development-to-locked Dice gap: 0.3495
+```
+
+The architecture finds useful ranked anomaly evidence but publishes masks that
+are far too broad. Mean predicted positive rate is `0.0524` versus estimated
+truth rate `0.0096`. Selector transfer is also poor: expected-IoU MAE is
+`0.2183`, Spearman correlation is `0.0851`, and conformal lower-bound coverage
+is only `0.3458`. Accepted masks improve Dice only from `0.1329` to `0.1830`
+relative to review masks. Chewing-gum is the sole strong category at `0.5897`
+Dice; macaroni1 and macaroni2 collapse to approximately `0.027`.
+
+This result blocks the generation/downstream Sprint 6. VisA is now exposed and
+may become development data only for a new V4 architecture. The next
+generalization claim requires a new untouched benchmark. V4 should prioritize
+leave-dataset-out score-to-mask calibration, real-candidate selector refitting,
+normal-boundary suppression, and multi-proposal localization rather than adding
+another evidence provider.
 
 Artifacts:
 
@@ -475,6 +508,9 @@ reports/v3_generic_evidence_visa_smoke/visa_smoke_review.md
 reports/v3_generic_evidence_visa_smoke/rerun_comparison_20260726/visa_current_vs_previous.md
 reports/v3_generic_evidence_visa_cache_provenance_smoke/rerun_comparison_20260726/current_vs_previous.md
 reports/v3_generic_evidence_visa_retention_smoke/retention_review.md
+reports/v3_generic_evidence_visa/locked_evaluation/v3-generic-evidence-rc2-operational-20260726/locked_evaluation_report.md
+reports/v3_generic_evidence_visa/locked_evaluation/v3-generic-evidence-rc2-operational-20260726/locked_result_review.md
+reports/v3_generic_evidence_visa/locked_evaluation/v3-generic-evidence-rc2-operational-20260726/locked_best_worst_contact_sheet.png
 ```
 
 ---
@@ -996,7 +1032,10 @@ post-confirmation ablations, not automatic implementation tasks.
 | **R3** | Locked-category mask confirmation | ✅ Primary confirmation complete | 839 images, 29,584 candidates. Locked macro Dice `0.3171`; oracle `0.5615`. Real-widened selector beats synthetic selector `+0.0952`, CI `[+0.0450,+0.1440]`; full release targets fail. | Selector contribution confirmed; architecture release rejected. No tuning on exposed categories. |
 | **R4** | Visibility critic validity + generation re-audit | 🟡 Automated gate passed; independent gate pending | Global retry and mask-local crop rejected. Fixed adapter negligible. Text/clone critic arbitration: visibility `+0.0289 [0.0110,0.0487]`, coverage `+0.1300`, leakage `-0.0022`, acceptance `10/18→14/18`. | Keep rejected mechanisms default-off. Do not promote arbitration until two blind reviewers and independent downstream evaluation agree. |
 | **R5** | Independent synthetic-utility ablation | ✅ Complete; promotion gate failed | Fusion-free ResNet18 U-Net, paired seeds, 120 matched steps, five seeds, fixed ratio, and hierarchical bootstrap. Historical pixel AP was `-0.0200` then `-0.0066`; strict deterministic replay reproduces `15/15` artifacts, and the full deterministic estimate is `-0.0015 [-0.0414,+0.0403]`. | Null confirmed under deterministic execution. Do not promote the synthetic corpus or run locked R5. |
-| **R6** | External baselines + paper package | 🟡 VisA runtime `1,115/1,200`; quantitative external result pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. The exact frozen RC has completed 92.92% of VisA inference under one stable run identity: eleven categories are complete and 15 pipe_fryum rows are checkpointed. Official masks remain sealed; completed pcb4 has six review decisions under 100% valid Qwen localization, while pipe_fryum opens at 15/15 soft-mask acceptance. Single-signal shutdown finalized status correctly, and one uncheckpointed fused-evidence artifact was removed, reconfirming the next-RC atomic-write requirement. SubspaceAD and MVTec AD 2 remain blocked. | Complete frozen VisA inference, then perform the one-shot locked evaluation without reopening tuning. |
+| **R6** | External baselines + paper package | ✅ VisA locked evaluation complete; generalization gate failed | The exact frozen RC completed `1,200/1,200` VisA images under one run identity with 16,800 valid retained PNGs. The one-shot sealed evaluation reports macro Dice `0.1593 [0.0941,0.2503]`, precision `0.1419`, recall `0.7488`, search recall `0.5898`, and accepted coverage `0.5267`; only chewing-gum exceeds `0.30` Dice. Expected-IoU Spearman is `0.0851`, confirming severe calibration transfer failure. SubspaceAD and MVTec AD 2 remain blocked. | Reject V3 as a general zero-shot mask generator and block generation Sprint 6. Treat VisA as development-only for V4; require a new untouched benchmark for the next locked claim. |
+| **V4.1** | Cross-dataset score-to-mask calibration | ⬜ Planned | Learn category-agnostic pixel posterior and compact component extraction from MVTec development plus exposed VisA using leave-dataset-out folds. No category-name rules. | Require predicted/true area ratio `<= 2.0`, macro precision `>= 0.30`, and no dataset collapse before selector refit. |
+| **V4.2** | Real-candidate selector and localization recalibration | ⬜ Planned | Refit IoU/precision/recall heads on real multi-dataset candidates; add normal-boundary suppression and multi-proposal Qwen/evidence localization. | Require expected-IoU Spearman `>= 0.40`, MAE `<= 0.12`, conformal coverage `0.85-0.95`, and search recall `>= 0.85`. |
+| **V4.3** | New locked generalization test | ⬜ Blocked on untouched dataset | Freeze V4 only after leave-dataset-out validation; VisA cannot be reused as locked evidence. | Run one sealed evaluation on a new external benchmark. Keep generation frozen until this gate passes. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly
 
