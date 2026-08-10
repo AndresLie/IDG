@@ -796,6 +796,54 @@ reports/current_pipeline_checkpoint/frozen_current_rerun/current_vs_previous_rev
 reports/current_pipeline_checkpoint/frozen_current_rerun/selected_mask_comparison.png
 ```
 
+## 1f. Bottleneck re-diagnosis after V4.2d (2026-08-10)
+
+Independent re-derivation from
+`reports/v4_2d_candidate_decision/candidate_ranking/leave_dataset_out_candidate_metrics.json`
+(no retuning; reading the sealed fold metrics) revises which bottleneck the next
+sprint should attack.
+
+| Dataset | Search recall | Search area | Oracle | Selected | Oracle−selected | Area ratio |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| btad_exposed | `0.6315` | `0.4662` | `0.3218` | `0.2305` | `0.0912` | `1.89` |
+| kodytek_exposed | `1.0000` | `0.3342` | `0.4951` | `0.3625` | `0.1326` | `2.86` |
+| ksdd2_exposed | `0.9607` | `0.4863` | `0.6144` | `0.5274` | `0.0870` | `1.74` |
+| mvtec_development | `0.9191` | `0.4634` | `0.6539` | `0.5811` | `0.0728` | `0.95` |
+| visa_exposed | `0.9682` | `0.4916` | `0.3583` | `0.1593` | `0.1990` | `5.25` |
+
+Three findings that the V4.2d "next sprint" (BTAD localization) does not address:
+
+1. **Selection work is ceiling-bound.** Dataset-macro oracle Dice is `0.4887`
+   against selected `0.3722`. Even a *perfect* within-image ranker gains only
+   `+0.117` macro and still leaves the system far from release quality. Further
+   selector iterations cannot produce a release-grade system.
+2. **The dominant failure is VisA candidate quality, not BTAD localization.**
+   VisA already has search recall `0.9682`; its oracle is only `0.3583`, so the
+   correct masks are *absent from the pool*, not mis-ranked. BTAD's low search
+   recall (`0.6315`) costs at most `0.0912` on one of five sources, while VisA
+   leaves `0.1990` on the table with localization already solved.
+3. **Over-segmentation is the shared, dominant error mode.** Macro predicted/true
+   area ratio is `2.54`; VisA predicts `5.2×` too much area. Only MVTec (`0.95`)
+   is area-calibrated — the domain the whole design was tuned on. Search recall
+   `0.90` is also bought with `0.45` search area, so recall and area must always
+   be reported together (V4.2 already flagged this).
+
+**Revised recommendation.** Do not run another selection/threshold sprint, and do
+not prioritize BTAD-only localization. The binding constraint is **candidate
+generation quality under domain shift** — specifically area/precision calibration
+of the proposals themselves. A pool whose oracle is `0.358` cannot be rescued by
+ranking, and the `2.54` area ratio says the proposal family systematically
+over-covers outside MVTec.
+
+The honest research position is unchanged and now better supported: the validated
+contribution is real-candidate selector calibration (locked MVTec
+`+0.0952 [0.0450, 0.1440]`); the architecture does not generalize at release
+quality (locked MVTec macro `0.3171`, VisA macro `0.1593`, 1/12 VisA categories
+≥ `0.30`). V4.1–V4.2d are four consecutive preregistered non-promotions, each
+correctly recorded as a failure rather than rounded to a pass (V4.2d missed by
+`0.00043`). That is a well-run negative-result series, and it is sufficient
+evidence to stop the selection line rather than iterate it a fifth time.
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.
