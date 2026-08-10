@@ -372,20 +372,20 @@ Qwen/model/selector/freeze validation: passed
 resume mode: enabled
 ```
 
-The full frozen run has now begun. Twenty-five bounded inference executions and
-one short orphan-recovery finalizer have completed `1,025/1,200` runtime images
-under the same run ID. The twenty-five resume operations
+The full frozen run has now begun. Twenty-six bounded inference executions and
+one short orphan-recovery finalizer have completed `1,070/1,200` runtime images
+under the same run ID. The twenty-six resume operations
 reused `55`, `60`, `115`, `159`, `201`, `231`, `261`, `291`, and then `355`
 and `415`, then `463`, `506`, `540`, and `575` checkpoint rows without
 duplication, followed by `611`, then `655` twice: one zero-row
 environment-isolation attempt and one productive resume, followed by `696`,
 `745`, `791`, `833`, `878`, `925`, `976`, and the recovered `1,024`-row
 temporary checkpoint. Exact productive throughput including recovery is
-`21.240 s/image`, projecting about `1.03` additional hours and a `5.25 GiB`
+`21.185 s/image`, projecting about `0.77` additional hours and a `5.27 GiB`
 final run footprint. The
 checkpoint contains complete candle, capsule, cashew, chewing-gum, fryum,
-macaroni1, macaroni2, pcb1, pcb2, and pcb3 categories plus 25 pcb4 rows, with
-562 `needs_review` and 463 `soft_mask_only` decisions. Whole-category chewing-gum
+macaroni1, macaroni2, pcb1, pcb2, and pcb3 categories plus 70 pcb4 rows, with
+566 `needs_review` and 504 `soft_mask_only` decisions. Whole-category chewing-gum
 acceptance is `42/100`
 with SAM2 selected on 48 rows. Completed fryum acceptance is `95/100`, and all
 100 rows use the `repeated_chain` profile. Its final 37 rows are more
@@ -414,9 +414,11 @@ confirming within-category heterogeneity rather than monotonic collapse. Pcb3
 completes at 100/100 soft-mask acceptance, expected IoU `0.3561`, and mean area
 `0.1119`. The final 24 rows remain fully accepted while becoming slightly more
 conservative. Pcb4 opens at 25/25 acceptance but lower expected IoU (`0.2915`)
-and area (`0.0712`). This supports soft-prior robustness but exposes no
-risk-coverage separation across either category; precision and positive-rate
-remain the decisive locked checks. Every pcb1 through current pcb4 row is
+and area (`0.0712`). The next 45 pcb4 rows add four `needs_review` decisions
+despite valid Qwen localization on every row and slightly lower source
+disagreement. This is the first within-PCB risk separation, but official overlap
+must establish whether it is useful calibration. Precision and positive-rate
+remain decisive locked checks. All pcb3 and 69/70 current pcb4 rows are
 `ring_sector`.
 Structural specialists are disabled, so the collapsed profile does not alter
 inference. Locked evaluation must distinguish appropriate pcb2 conservatism
@@ -437,8 +439,15 @@ recovery correctly validated and recovered all 1,024 rows, then finalized a
 experiment, but next-RC checkpoint finalization should be hardened against a
 second signal during exception cleanup.
 
+The following single-signal PTY run confirms that status finalization itself can
+complete normally without timeout escalation. It also reinforces the earlier
+artifact-publication weakness: interruption during PNG overlay encoding left
+14 artifacts for an uncheckpointed sample, including one corrupt overlay. The
+entire row-070 set was removed, leaving exactly 14 readable PNGs per durable
+row. Atomic temporary-file publication remains a next-RC requirement.
+
 This does not reopen mask or generation tuning. The next R6 work is to resume
-and complete the approximately 1.03-hour remaining VisA inference, run the
+and complete the approximately 0.77-hour remaining VisA inference, run the
 one-shot locked evaluation, then acquire dependencies for the remaining
 external reproductions.
 
@@ -980,7 +989,7 @@ post-confirmation ablations, not automatic implementation tasks.
 | **R3** | Locked-category mask confirmation | ✅ Primary confirmation complete | 839 images, 29,584 candidates. Locked macro Dice `0.3171`; oracle `0.5615`. Real-widened selector beats synthetic selector `+0.0952`, CI `[+0.0450,+0.1440]`; full release targets fail. | Selector contribution confirmed; architecture release rejected. No tuning on exposed categories. |
 | **R4** | Visibility critic validity + generation re-audit | 🟡 Automated gate passed; independent gate pending | Global retry and mask-local crop rejected. Fixed adapter negligible. Text/clone critic arbitration: visibility `+0.0289 [0.0110,0.0487]`, coverage `+0.1300`, leakage `-0.0022`, acceptance `10/18→14/18`. | Keep rejected mechanisms default-off. Do not promote arbitration until two blind reviewers and independent downstream evaluation agree. |
 | **R5** | Independent synthetic-utility ablation | ✅ Complete; promotion gate failed | Fusion-free ResNet18 U-Net, paired seeds, 120 matched steps, five seeds, fixed ratio, and hierarchical bootstrap. Historical pixel AP was `-0.0200` then `-0.0066`; strict deterministic replay reproduces `15/15` artifacts, and the full deterministic estimate is `-0.0015 [-0.0414,+0.0403]`. | Null confirmed under deterministic execution. Do not promote the synthetic corpus or run locked R5. |
-| **R6** | External baselines + paper package | 🟡 VisA runtime `1,025/1,200`; quantitative external result pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. The exact frozen RC has completed 85.42% of VisA inference under one stable run identity: ten categories are complete and 25 pcb4 rows are checkpointed. Official masks remain sealed; pcb3 completion and the pcb4 opening preserve universal PCB soft acceptance while strengthening the risk-coverage warning. Native orphan recovery also preserved 48 flushed rows after interrupted cleanup. SubspaceAD and MVTec AD 2 remain blocked. | Complete frozen VisA inference, then perform the one-shot locked evaluation without reopening tuning. |
+| **R6** | External baselines + paper package | 🟡 VisA runtime `1,070/1,200`; quantitative external result pending | Governed hash-pinned package includes the R1 calibration curves, development/locked risk-coverage, R3 failure sheet, R4 provisional result, R5 deterministic null, and claim ledger. The exact frozen RC has completed 89.17% of VisA inference under one stable run identity: ten categories are complete and 70 pcb4 rows are checkpointed. Official masks remain sealed; four pcb4 review decisions provide the first within-PCB risk separation without localization failure. Single-signal shutdown finalized status correctly, while interrupted overlay publication reconfirmed the next-RC atomic-write requirement. SubspaceAD and MVTec AD 2 remain blocked. | Complete frozen VisA inference, then perform the one-shot locked evaluation without reopening tuning. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly
 
