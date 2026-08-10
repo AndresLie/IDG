@@ -10,7 +10,7 @@ import cv2
 import joblib
 import numpy as np
 from PIL import Image
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.isotonic import IsotonicRegression
 
@@ -24,6 +24,10 @@ from iadgen_v2.records import write_json
 
 
 CANDIDATE_CALIBRATION_SCHEMA_VERSION = 1
+CANDIDATE_SELECTION_STRATEGIES = (
+    "baseline_guarded_candidate_gain",
+    "all_pairs_list_rank",
+)
 CANDIDATE_FEATURE_NAMES = (
     "fused_mean",
     "fused_contrast",
@@ -90,6 +94,44 @@ class CandidateArbitrationResult:
 
 
 @dataclass(frozen=True)
+class CandidateListRankingContract:
+    """Serializable contract for category-free within-image list ranking."""
+
+    strategy: str
+    base_feature_names: tuple[str, ...]
+    pair_feature_names: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.strategy != "all_pairs_list_rank":
+            raise ValueError(f"Unsupported list-ranking strategy: {self.strategy}")
+        if self.base_feature_names != CANDIDATE_FEATURE_NAMES:
+            raise ValueError("List-ranking base feature contract mismatch")
+        expected = tuple(f"delta_{name}" for name in CANDIDATE_FEATURE_NAMES) + tuple(
+            f"rank_delta_{name}" for name in CANDIDATE_FEATURE_NAMES
+        ) + tuple(
+            f"pair_mean_{name}" for name in CANDIDATE_FEATURE_NAMES
+        ) + tuple(
+            f"list_mean_{name}" for name in CANDIDATE_FEATURE_NAMES
+        ) + tuple(
+            f"list_std_{name}" for name in CANDIDATE_FEATURE_NAMES
+        )
+        if self.pair_feature_names != expected:
+            raise ValueError("List-ranking pair feature contract mismatch")
+
+
+LIST_RANKING_CONTRACT = CandidateListRankingContract(
+    strategy="all_pairs_list_rank",
+    base_feature_names=CANDIDATE_FEATURE_NAMES,
+    pair_feature_names=tuple(f"delta_{name}" for name in CANDIDATE_FEATURE_NAMES)
+    + tuple(f"rank_delta_{name}" for name in CANDIDATE_FEATURE_NAMES)
+    + tuple(f"pair_mean_{name}" for name in CANDIDATE_FEATURE_NAMES)
+    + tuple(f"list_mean_{name}" for name in CANDIDATE_FEATURE_NAMES)
+    + tuple(f"list_std_{name}" for name in CANDIDATE_FEATURE_NAMES),
+)
+LIST_RANK_DIRECTIONAL_FEATURE_COUNT = 2 * len(CANDIDATE_FEATURE_NAMES)
+
+
+@dataclass(frozen=True)
 class _CalibrationSample:
     dataset_id: str
     category: str
@@ -113,6 +155,13 @@ class CrossDatasetCandidateCalibrator:
             raise ValueError(f"Unsupported candidate calibration bundle: {model_path}")
         if tuple(loaded.get("feature_names", ())) != CANDIDATE_FEATURE_NAMES:
             raise ValueError(f"Candidate calibration feature contract mismatch: {model_path}")
+        selection_strategy = str(loaded.get("selection_strategy", "baseline_guarded_candidate_gain"))
+        if selection_strategy not in CANDIDATE_SELECTION_STRATEGIES:
+            raise ValueError(f"Unsupported candidate selection strategy: {selection_strategy}")
+        if selection_strategy == "all_pairs_list_rank" and tuple(loaded.get("pair_feature_names", ())) != (
+            LIST_RANKING_CONTRACT.pair_feature_names
+        ):
+            raise ValueError(f"Candidate list-ranking feature contract mismatch: {model_path}")
         self.bundle: dict[str, Any] = loaded
 
     def select(
@@ -140,10 +189,8 @@ class CrossDatasetCandidateCalibrator:
         )
         prediction_rows = _predict_candidates(self.bundle, candidates)
         baseline = candidates[0]
-        alternatives = [row for row in prediction_rows if not bool(row["is_baseline"])]
-        best = max(alternatives, key=lambda row: float(row["gain_lower_bound"])) if alternatives else prediction_rows[0]
-        override = bool(float(best["gain_lower_bound"]) > float(self.bundle.get("minimum_gain_lower_bound", 0.0)))
-        selected_mode = str(best["mode"]) if override else baseline.mode
+        selected_row, override = _select_prediction_row(self.bundle, prediction_rows)
+        selected_mode = str(selected_row["mode"]) if override else baseline.mode
         selected = next(candidate for candidate in candidates if candidate.mode == selected_mode)
         return CandidateArbitrationResult(
             selected=selected,
@@ -328,6 +375,12 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
     max_components = int(settings.get("max_components_per_quantile", 4))
     min_component_area = int(settings.get("min_component_area", 8))
     localization_envelope = bool(settings.get("localization_envelope", False))
+    selection_strategy = str(settings.get("selection_strategy", "baseline_guarded_candidate_gain"))
+    if selection_strategy not in CANDIDATE_SELECTION_STRATEGIES:
+        raise ValueError(
+            "candidate_calibration.selection_strategy must be one of "
+            f"{CANDIDATE_SELECTION_STRATEGIES}, got {selection_strategy!r}"
+        )
     rows, sample_rows = _build_training_rows(
         sources,
         posterior,
@@ -350,31 +403,46 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
     }
     held_out_rows = []
     fold_summaries = []
+    minimum_gain_lower_bound = float(settings.get("minimum_gain_lower_bound", 0.0))
+    minimum_expected_iou_gain_value = settings.get("minimum_expected_iou_gain")
+    minimum_expected_iou_gain = (
+        float(minimum_expected_iou_gain_value) if minimum_expected_iou_gain_value is not None else None
+    )
     for dataset_id in datasets:
         train_rows = [row for row in rows if row["dataset_id"] != dataset_id]
         test_rows = [row for row in rows if row["dataset_id"] == dataset_id]
-        bundle = _fit_candidate_bundle(train_rows, model_settings)
+        bundle = _fit_candidate_bundle(train_rows, model_settings, selection_strategy=selection_strategy)
+        bundle["minimum_gain_lower_bound"] = minimum_gain_lower_bound
+        if minimum_expected_iou_gain is not None:
+            bundle["minimum_expected_iou_gain"] = minimum_expected_iou_gain
         predicted = _predict_label_rows(bundle, test_rows)
         held_out_rows.extend(predicted)
-        fold_summaries.append(_fold_summary(dataset_id, predicted, sample_rows))
+        fold_summaries.append(_fold_summary(dataset_id, predicted, sample_rows, bundle=bundle))
 
-    overall = _overall_summary(fold_summaries, held_out_rows, settings)
-    final_bundle = _fit_candidate_bundle(rows, model_settings)
+    overall = _overall_summary(
+        fold_summaries,
+        held_out_rows,
+        settings,
+        selection_strategy=selection_strategy,
+    )
+    final_bundle = _fit_candidate_bundle(rows, model_settings, selection_strategy=selection_strategy)
     final_bundle.update(
         {
             "schema_version": CANDIDATE_CALIBRATION_SCHEMA_VERSION,
             "feature_names": list(CANDIDATE_FEATURE_NAMES),
-            "selection_strategy": "baseline_guarded_candidate_gain",
+            "selection_strategy": selection_strategy,
             "candidate_quantiles": list(quantiles),
             "max_components_per_quantile": max_components,
             "localization_envelope": localization_envelope,
-            "minimum_gain_lower_bound": float(settings.get("minimum_gain_lower_bound", 0.0)),
+            "minimum_gain_lower_bound": minimum_gain_lower_bound,
             "development_datasets": datasets,
             "training_candidate_count": len(rows),
             "training_image_count": len(sample_rows),
             "leave_dataset_out_summary": overall,
         }
     )
+    if minimum_expected_iou_gain is not None:
+        final_bundle["minimum_expected_iou_gain"] = minimum_expected_iou_gain
     output_value = settings.get("model_output_path") or (
         config.output_dir / "auto_masks" / "selector" / "cross_dataset_candidate_calibrator.joblib"
     )
@@ -557,9 +625,16 @@ def _build_training_rows(
     return rows, sample_rows
 
 
-def _fit_candidate_bundle(rows: list[dict[str, Any]], model_settings: dict[str, Any]) -> dict[str, Any]:
+def _fit_candidate_bundle(
+    rows: list[dict[str, Any]],
+    model_settings: dict[str, Any],
+    *,
+    selection_strategy: str = "baseline_guarded_candidate_gain",
+) -> dict[str, Any]:
     if len(rows) < 20:
         raise ValueError("Candidate calibration requires at least 20 rows")
+    if selection_strategy not in CANDIDATE_SELECTION_STRATEGIES:
+        raise ValueError(f"Unsupported candidate selection strategy: {selection_strategy}")
     features = np.asarray(
         [[float(row["features"][name]) for name in CANDIDATE_FEATURE_NAMES] for row in rows],
         dtype=np.float32,
@@ -569,6 +644,7 @@ def _fit_candidate_bundle(rows: list[dict[str, Any]], model_settings: dict[str, 
     bundle: dict[str, Any] = {
         "schema_version": CANDIDATE_CALIBRATION_SCHEMA_VERSION,
         "feature_names": list(CANDIDATE_FEATURE_NAMES),
+        "selection_strategy": selection_strategy,
     }
     for target_name in ("iou", "precision", "recall"):
         target = np.asarray([float(row[target_name]) for row in rows], dtype=np.float32)
@@ -581,8 +657,22 @@ def _fit_candidate_bundle(rows: list[dict[str, Any]], model_settings: dict[str, 
         bundle[f"{target_name}_calibrator"] = calibrator
         bundle[f"{target_name}_residual_q90"] = residual
 
-    pair_features, pair_targets, pair_groups, pair_weights = _gain_training_arrays(rows)
-    pair_oof = _group_oof_regression(pair_features, pair_targets, pair_groups, pair_weights, model_settings)
+    if selection_strategy == "all_pairs_list_rank":
+        pair_features, pair_targets, pair_groups, pair_weights = _list_rank_training_arrays(rows)
+        bundle["pair_feature_names"] = list(LIST_RANKING_CONTRACT.pair_feature_names)
+    else:
+        pair_features, pair_targets, pair_groups, pair_weights = _gain_training_arrays(rows)
+    pair_oof = (
+        _group_oof_antisymmetric_regression(
+            pair_features,
+            pair_targets,
+            pair_groups,
+            pair_weights,
+            model_settings,
+        )
+        if selection_strategy == "all_pairs_list_rank"
+        else _group_oof_regression(pair_features, pair_targets, pair_groups, pair_weights, model_settings)
+    )
     gain_model = HistGradientBoostingRegressor(**model_settings).fit(
         pair_features,
         pair_targets,
@@ -602,20 +692,48 @@ def _predict_candidates(bundle: dict[str, Any], candidates: list[ArbitrationCand
     for target_name in ("iou", "precision", "recall"):
         raw = bundle[f"{target_name}_model"].predict(feature_matrix)
         predicted[target_name] = np.clip(bundle[f"{target_name}_calibrator"].predict(raw), 0.0, 1.0)
-    baseline_features = feature_matrix[0]
-    pair_features = np.concatenate(
-        (
+    selection_strategy = str(bundle.get("selection_strategy", "baseline_guarded_candidate_gain"))
+    list_scores: np.ndarray | None = None
+    if selection_strategy == "all_pairs_list_rank":
+        candidate_indices = np.arange(len(candidates), dtype=np.int32)
+        baseline_features = _list_pair_feature_matrix(
             feature_matrix,
-            np.repeat(baseline_features[None, :], len(candidates), axis=0),
-            feature_matrix - baseline_features[None, :],
-        ),
-        axis=1,
-    )
-    gain = bundle["gain_model"].predict(pair_features)
+            candidate_indices,
+            np.zeros(len(candidates), dtype=np.int32),
+        )
+        gain = _antisymmetric_pair_prediction(bundle["gain_model"], baseline_features)
+        list_scores = np.asarray(
+            [
+                float(
+                    _antisymmetric_pair_prediction(
+                        bundle["gain_model"],
+                        _list_pair_feature_matrix(
+                            feature_matrix,
+                            np.full(len(candidates), index, dtype=np.int32),
+                            candidate_indices,
+                        ),
+                    ).mean()
+                )
+                for index in range(len(candidates))
+            ],
+            dtype=np.float32,
+        )
+    else:
+        baseline_features = feature_matrix[0]
+        pair_features = np.concatenate(
+            (
+                feature_matrix,
+                np.repeat(baseline_features[None, :], len(candidates), axis=0),
+                feature_matrix - baseline_features[None, :],
+            ),
+            axis=1,
+        )
+        gain = bundle["gain_model"].predict(pair_features)
     gain_lower = gain - float(bundle["gain_residual_q90"])
     iou_lower = predicted["iou"] - float(bundle["iou_residual_q90"])
-    return [
-        {
+    output: list[dict[str, float | str | bool]] = []
+    for index, candidate in enumerate(candidates):
+        row: dict[str, float | str | bool] = {
             "mode": candidate.mode,
             "expected_iou": float(predicted["iou"][index]),
             "expected_precision": float(predicted["precision"][index]),
@@ -625,8 +743,34 @@ def _predict_candidates(bundle: dict[str, Any], candidates: list[ArbitrationCand
             "gain_lower_bound": float(gain_lower[index]),
             "is_baseline": candidate.mode == "v4_baseline_selected",
         }
-        for index, candidate in enumerate(candidates)
-    ]
+        if list_scores is not None:
+            row["list_score"] = float(list_scores[index])
+        output.append(row)
+    return output
+
+
+def _select_prediction_row(
+    bundle: dict[str, Any],
+    prediction_rows: list[dict[str, Any]],
+) -> tuple[dict[str, Any], bool]:
+    if not prediction_rows:
+        raise ValueError("Candidate selection requires at least one prediction")
+    baseline = next(row for row in prediction_rows if bool(row["is_baseline"]))
+    alternatives = [row for row in prediction_rows if not bool(row["is_baseline"])]
+    strategy = str(bundle.get("selection_strategy", "baseline_guarded_candidate_gain"))
+    if strategy == "all_pairs_list_rank":
+        best = max(prediction_rows, key=lambda row: float(row.get("list_score", float("-inf"))))
+        expected_iou_gain = float(best["expected_iou"]) - float(baseline["expected_iou"])
+        override = not bool(best["is_baseline"]) and bool(
+            float(best["gain_lower_bound"]) > float(bundle.get("minimum_gain_lower_bound", 0.0))
+            and expected_iou_gain > float(bundle.get("minimum_expected_iou_gain", float("-inf")))
+        )
+    else:
+        best = max(alternatives, key=lambda row: float(row["gain_lower_bound"])) if alternatives else baseline
+        override = bool(
+            float(best["gain_lower_bound"]) > float(bundle.get("minimum_gain_lower_bound", 0.0))
+        )
+    return (best, True) if override else (baseline, False)
 
 
 def _predict_label_rows(bundle: dict[str, Any], rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -647,19 +791,37 @@ def _predict_label_rows(bundle: dict[str, Any], rows: list[dict[str, Any]]) -> l
     return output
 
 
-def _fold_summary(dataset_id: str, rows: list[dict[str, Any]], sample_rows: list[dict[str, Any]]) -> dict[str, Any]:
+def _fold_summary(
+    dataset_id: str,
+    rows: list[dict[str, Any]],
+    sample_rows: list[dict[str, Any]],
+    *,
+    bundle: dict[str, Any],
+) -> dict[str, Any]:
     selected = []
     baseline = []
     oracle = []
+    pairwise_coverage = []
+    list_rank_correlations = []
     for sample_id in sorted({str(row["sample_id"]) for row in rows}):
         group = [row for row in rows if row["sample_id"] == sample_id]
         base = next(row for row in group if bool(row["is_baseline"]))
-        alternatives = [row for row in group if not bool(row["is_baseline"])]
-        best = max(alternatives, key=lambda row: float(row["gain_lower_bound"])) if alternatives else base
-        chosen = best if float(best["gain_lower_bound"]) > 0.0 else base
+        chosen, _ = _select_prediction_row(bundle, group)
         selected.append(chosen)
         baseline.append(base)
         oracle.append(max(group, key=lambda row: float(row["iou"])))
+        pairwise_coverage.extend(
+            float(row["gain_lower_bound"]) <= float(row["iou"]) - float(base["iou"])
+            for row in group
+            if not bool(row["is_baseline"])
+        )
+        if str(bundle.get("selection_strategy")) == "all_pairs_list_rank" and len(group) > 1:
+            actual = np.asarray([float(row["iou"]) for row in group])
+            predicted_rank = np.asarray([float(row["list_score"]) for row in group])
+            if float(actual.std()) > 1e-12 and float(predicted_rank.std()) > 1e-12:
+                value = float(spearmanr(predicted_rank, actual).statistic)
+                if np.isfinite(value):
+                    list_rank_correlations.append(value)
     actual_iou = np.asarray([float(row["iou"]) for row in rows])
     expected_iou = np.asarray([float(row["expected_iou"]) for row in rows])
     if float(expected_iou.std()) < 1e-12 or float(actual_iou.std()) < 1e-12:
@@ -676,6 +838,9 @@ def _fold_summary(dataset_id: str, rows: list[dict[str, Any]], sample_rows: list
         "baseline_dice": float(np.mean([float(row["dice"]) for row in baseline])),
         "selected_dice": float(np.mean([float(row["dice"]) for row in selected])),
         "oracle_dice": float(np.mean([float(row["dice"]) for row in oracle])),
+        "selection_regret": float(
+            np.mean([float(oracle_row["dice"]) - float(selected_row["dice"]) for oracle_row, selected_row in zip(oracle, selected)])
+        ),
         "selected_precision": float(np.mean([float(row["precision"]) for row in selected])),
         "selected_recall": float(np.mean([float(row["recall"]) for row in selected])),
         "selected_area_ratio": float(
@@ -688,6 +853,8 @@ def _fold_summary(dataset_id: str, rows: list[dict[str, Any]], sample_rows: list
         "conformal_coverage": float(
             np.mean([float(row["conformal_iou_lower_bound"]) <= float(row["iou"]) for row in rows])
         ),
+        "pairwise_conformal_coverage": float(np.mean(pairwise_coverage)) if pairwise_coverage else 1.0,
+        "within_image_rank_spearman": float(np.mean(list_rank_correlations)) if list_rank_correlations else 0.0,
         "search_region_recall": float(np.mean([float(row["search_region_recall"]) for row in source_samples])),
         "search_region_area_fraction": float(np.mean([float(row["search_region_area_fraction"]) for row in source_samples])),
     }
@@ -697,11 +864,18 @@ def _overall_summary(
     folds: list[dict[str, Any]],
     rows: list[dict[str, Any]],
     settings: dict[str, Any],
+    *,
+    selection_strategy: str,
 ) -> dict[str, Any]:
     mean = lambda key: float(np.mean([float(fold[key]) for fold in folds]))
     max_regression = float(settings.get("max_dataset_dice_regression", 0.02))
     coverage_min = float(settings.get("target_coverage_min", 0.85))
     coverage_max = float(settings.get("target_coverage_max", 0.95))
+    coverage_key = (
+        "pairwise_conformal_coverage"
+        if selection_strategy == "all_pairs_list_rank"
+        else "conformal_coverage"
+    )
     gates = {
         "expected_iou_spearman": all(
             float(fold["expected_iou_spearman"]) >= float(settings.get("target_spearman", 0.40)) for fold in folds
@@ -710,7 +884,7 @@ def _overall_summary(
             float(fold["expected_iou_mae"]) <= float(settings.get("target_mae", 0.12)) for fold in folds
         ),
         "conformal_coverage": all(
-            coverage_min <= float(fold["conformal_coverage"]) <= coverage_max for fold in folds
+            coverage_min <= float(fold[coverage_key]) <= coverage_max for fold in folds
         ),
         "search_region_recall": all(
             float(fold["search_region_recall"]) >= float(settings.get("target_search_recall", 0.85)) for fold in folds
@@ -727,15 +901,25 @@ def _overall_summary(
         "dataset_macro_baseline_dice": mean("baseline_dice"),
         "dataset_macro_selected_dice": mean("selected_dice"),
         "dataset_macro_oracle_dice": mean("oracle_dice"),
+        "dataset_macro_selection_regret": mean("selection_regret"),
         "dataset_macro_precision": mean("selected_precision"),
         "dataset_macro_recall": mean("selected_recall"),
         "dataset_macro_area_ratio": mean("selected_area_ratio"),
         "dataset_macro_expected_iou_spearman": mean("expected_iou_spearman"),
         "dataset_macro_expected_iou_mae": mean("expected_iou_mae"),
         "dataset_macro_conformal_coverage": mean("conformal_coverage"),
+        "dataset_macro_pairwise_conformal_coverage": mean("pairwise_conformal_coverage"),
+        "dataset_macro_within_image_rank_spearman": mean("within_image_rank_spearman"),
         "dataset_macro_search_region_recall": mean("search_region_recall"),
         "dataset_macro_search_region_area_fraction": mean("search_region_area_fraction"),
         "gates": gates,
+        "coverage_metric": coverage_key,
+        "selection_strategy": selection_strategy,
+        "minimum_expected_iou_gain": (
+            float(settings["minimum_expected_iou_gain"])
+            if settings.get("minimum_expected_iou_gain") is not None
+            else None
+        ),
         "promotion_passed": all(gates.values()),
         "held_out_candidate_count": len(rows),
     }
@@ -847,6 +1031,30 @@ def _group_oof_regression(
     return output
 
 
+def _group_oof_antisymmetric_regression(
+    features: np.ndarray,
+    target: np.ndarray,
+    groups: np.ndarray,
+    weights: np.ndarray,
+    model_settings: dict[str, Any],
+) -> np.ndarray:
+    unique_groups = sorted(set(groups.tolist()))
+    output = np.zeros(len(target), dtype=np.float32)
+    if len(unique_groups) < 2:
+        model = HistGradientBoostingRegressor(**model_settings).fit(features, target, sample_weight=weights)
+        return _antisymmetric_pair_prediction(model, features)
+    for group in unique_groups:
+        held = groups == group
+        train = ~held
+        model = HistGradientBoostingRegressor(**model_settings).fit(
+            features[train],
+            target[train],
+            sample_weight=weights[train],
+        )
+        output[held] = _antisymmetric_pair_prediction(model, features[held])
+    return output
+
+
 def _gain_training_arrays(
     rows: list[dict[str, Any]],
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -870,6 +1078,126 @@ def _gain_training_arrays(
             targets.append(float(row["iou"]) - float(baseline["iou"]))
             groups.append(str(row["category"]))
             weights.append(1.0 / max(1, dataset_counts[str(row["dataset_id"])]) / max(1, sample_counts[sample_id]))
+    weights_array = np.asarray(weights, dtype=np.float32)
+    weights_array /= max(1e-8, float(weights_array.mean()))
+    return (
+        np.asarray(features, dtype=np.float32),
+        np.asarray(targets, dtype=np.float32),
+        np.asarray(groups),
+        weights_array,
+    )
+
+
+def _list_rank_representation(feature_matrix: np.ndarray) -> np.ndarray:
+    feature_matrix = np.asarray(feature_matrix, dtype=np.float32)
+    if feature_matrix.ndim != 2 or feature_matrix.shape[1] != len(CANDIDATE_FEATURE_NAMES):
+        raise ValueError("List-ranking feature matrix has the wrong shape")
+    candidate_count = feature_matrix.shape[0]
+    if candidate_count == 0:
+        raise ValueError("List ranking requires at least one candidate")
+    if candidate_count == 1:
+        ranks = np.zeros_like(feature_matrix, dtype=np.float32)
+    else:
+        ranks = np.column_stack(
+            [
+                (rankdata(feature_matrix[:, index], method="average") - 1.0) / (candidate_count - 1)
+                for index in range(feature_matrix.shape[1])
+            ]
+        ).astype(np.float32)
+    return np.concatenate((feature_matrix, ranks), axis=1)
+
+
+def _list_pair_feature_matrix(
+    feature_matrix: np.ndarray,
+    first_indices: np.ndarray,
+    second_indices: np.ndarray,
+) -> np.ndarray:
+    feature_matrix = np.asarray(feature_matrix, dtype=np.float32)
+    first_indices = np.asarray(first_indices, dtype=np.int32)
+    second_indices = np.asarray(second_indices, dtype=np.int32)
+    if first_indices.shape != second_indices.shape or first_indices.ndim != 1:
+        raise ValueError("List-ranking pair indices must be aligned vectors")
+    representation = _list_rank_representation(feature_matrix)
+    raw = representation[:, : len(CANDIDATE_FEATURE_NAMES)]
+    ranks = representation[:, len(CANDIDATE_FEATURE_NAMES) :]
+    list_mean = np.repeat(raw.mean(axis=0, keepdims=True), len(first_indices), axis=0)
+    list_std = np.repeat(raw.std(axis=0, keepdims=True), len(first_indices), axis=0)
+    return np.concatenate(
+        (
+            raw[first_indices] - raw[second_indices],
+            ranks[first_indices] - ranks[second_indices],
+            0.5 * (raw[first_indices] + raw[second_indices]),
+            list_mean,
+            list_std,
+        ),
+        axis=1,
+    ).astype(np.float32)
+
+
+def _reverse_list_pair_features(pair_features: np.ndarray) -> np.ndarray:
+    reversed_features = np.asarray(pair_features, dtype=np.float32).copy()
+    reversed_features[:, :LIST_RANK_DIRECTIONAL_FEATURE_COUNT] *= -1.0
+    return reversed_features
+
+
+def _antisymmetric_pair_prediction(model: HistGradientBoostingRegressor, pair_features: np.ndarray) -> np.ndarray:
+    pair_features = np.asarray(pair_features, dtype=np.float32)
+    if pair_features.ndim != 2 or pair_features.shape[1] != len(LIST_RANKING_CONTRACT.pair_feature_names):
+        raise ValueError("List-ranking pair feature matrix has the wrong shape")
+    return np.asarray(
+        0.5 * (model.predict(pair_features) - model.predict(_reverse_list_pair_features(pair_features))),
+        dtype=np.float32,
+    )
+
+
+def _list_rank_training_arrays(
+    rows: list[dict[str, Any]],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    features: list[np.ndarray] = []
+    targets: list[float] = []
+    groups: list[str] = []
+    weights: list[float] = []
+    grouped_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped_rows.setdefault(str(row["sample_id"]), []).append(row)
+    grouped_rows = dict(sorted(grouped_rows.items()))
+    dataset_counts = {
+        dataset_id: sum(str(group[0]["dataset_id"]) == dataset_id for group in grouped_rows.values())
+        for dataset_id in sorted({str(row["dataset_id"]) for row in rows})
+    }
+    for group_rows in grouped_rows.values():
+        matrix = np.asarray(
+            [[float(row["features"][name]) for name in CANDIDATE_FEATURE_NAMES] for row in group_rows],
+            dtype=np.float32,
+        )
+        pair_count = max(1, len(group_rows) * (len(group_rows) - 1))
+        dataset_id = str(group_rows[0]["dataset_id"])
+        category_group = f"{dataset_id}:{group_rows[0]['category']}"
+        pair_weight = 1.0 / max(1, dataset_counts[dataset_id]) / pair_count
+        first_indices = []
+        second_indices = []
+        pair_targets = []
+        for first in range(len(group_rows)):
+            for second in range(first + 1, len(group_rows)):
+                first_indices.append(first)
+                second_indices.append(second)
+                pair_targets.append(float(group_rows[first]["iou"]) - float(group_rows[second]["iou"]))
+        if not first_indices:
+            continue
+        pair_features = _list_pair_feature_matrix(
+            matrix,
+            np.asarray(first_indices, dtype=np.int32),
+            np.asarray(second_indices, dtype=np.int32),
+        )
+        reversed_features = _reverse_list_pair_features(pair_features)
+        features.extend(pair_features)
+        features.extend(reversed_features)
+        targets.extend(pair_targets)
+        targets.extend(-value for value in pair_targets)
+        groups.extend([category_group] * (2 * len(pair_targets)))
+        weights.extend([pair_weight] * (2 * len(pair_targets)))
+    if not features:
+        raise ValueError("List ranking requires at least one within-image candidate pair")
     weights_array = np.asarray(weights, dtype=np.float32)
     weights_array /= max(1e-8, float(weights_array.mean()))
     return (
@@ -907,19 +1235,24 @@ def _candidate_report(model_path: Path, overall: dict[str, Any], folds: list[dic
         "Every metric row is predicted by a model that excluded the complete source dataset. Official masks label retained candidates only after generation.",
         "",
         f"- Development candidate model: `{model_path}`",
+        f"- Selection strategy: `{overall['selection_strategy']}`",
+        f"- Minimum absolute-head IoU gain: `{overall['minimum_expected_iou_gain']}`",
+        f"- Coverage gate metric: `{overall['coverage_metric']}`",
         f"- Promotion passed: `{bool(overall['promotion_passed'])}`",
         "",
-        "| Dataset | Images | Baseline Dice | Selected Dice | Delta | Oracle Dice | Precision | Recall | Area Ratio | Override Rate | Spearman | MAE | Coverage | Search Recall | Search Area |",
-        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
+        "| Dataset | Images | Baseline Dice | Selected Dice | Delta | Oracle Dice | Regret | Precision | Recall | Area Ratio | Override Rate | IoU Spearman | List Spearman | MAE | IoU Coverage | Pair Coverage | Search Recall | Search Area |",
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |",
     ]
     for fold in folds:
         lines.append(
             f"| {fold['dataset_id']} | {fold['images']} | `{fold['baseline_dice']:.4f}` | "
             f"`{fold['selected_dice']:.4f}` | `{fold['selected_dice'] - fold['baseline_dice']:+.4f}` | "
-            f"`{fold['oracle_dice']:.4f}` | `{fold['selected_precision']:.4f}` | `{fold['selected_recall']:.4f}` | "
+            f"`{fold['oracle_dice']:.4f}` | `{fold['selection_regret']:.4f}` | "
+            f"`{fold['selected_precision']:.4f}` | `{fold['selected_recall']:.4f}` | "
             f"`{fold['selected_area_ratio']:.4f}` | `{fold['override_rate']:.4f}` | "
-            f"`{fold['expected_iou_spearman']:.4f}` | `{fold['expected_iou_mae']:.4f}` | "
-            f"`{fold['conformal_coverage']:.4f}` | `{fold['search_region_recall']:.4f}` | "
+            f"`{fold['expected_iou_spearman']:.4f}` | `{fold['within_image_rank_spearman']:.4f}` | "
+            f"`{fold['expected_iou_mae']:.4f}` | `{fold['conformal_coverage']:.4f}` | "
+            f"`{fold['pairwise_conformal_coverage']:.4f}` | `{fold['search_region_recall']:.4f}` | "
             f"`{fold['search_region_area_fraction']:.4f}` |"
         )
     lines.extend(

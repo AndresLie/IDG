@@ -1,0 +1,39 @@
+{
+  "metrics_path": "/home/p76147019/ImgGen/v2/reports/v4_candidate_ranking/candidate_ranking/leave_dataset_out_candidate_metrics.json",
+  "metrics_sha256": "1d3722c445a352f095ed7925df9b1cddff58b0981787eb2287471c62607a0bc7",
+  "model_path": "/home/p76147019/ImgGen/v2/outputs/v4_candidate_ranking/auto_masks/selector/cross_dataset_candidate_ranker.joblib",
+  "model_sha256": "b5860d003f44bb093b6074dcb6fcd486081e58a9aed94d12292738f5621904fc",
+  "promotion_passed": false,
+  "report_path": "/home/p76147019/ImgGen/v2/reports/v4_candidate_ranking/candidate_ranking/candidate_calibration_report.md",
+  "report_sha256": "841f9b57d6458872c274c773bc9701b641e53c914dc78f6c7088dbb9a18ea39d",
+  "schema_version": 1,
+  "sources": [
+    {
+      "dataset_id": "mvtec_development",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/as1b_calib_widen/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "27487bdb7a0c0466e82987aa854233dd962719ac5df74718d4d277e36e3c3189",
+      "reference_kind": "mvtec",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/mvtec_ad",
+      "reference_sha256": null,
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/mvtec_ad"
+    },
+    {
+      "dataset_id": "visa_exposed",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/v3_generic_evidence_visa/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "7a086751bbc4609fdfc9a01096d2b6258c173809738d30f889f2a436d99489e3",
+      "reference_kind": "manifest",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/visa_official_reference_masks/visa_reference_manifest.jsonl",
+      "reference_sha256": "cb19d9e379b1bcfc4546e5103a2452fa85d83e9f758f501e9c431a2ff43ad693",
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/visa_runtime"
+    },
+    {
+      "dataset_id": "kodytek_exposed",
+      "metadata_path": "/home/p76147019/ImgGen/v2/outputs/v4_candidate_ranking_kodytek/auto_masks/qwen/metadata.jsonl",
+      "metadata_sha256": "f6e964ba95eb80ee2b1b27c9ca32973b5a8a71e14a20e4cf4b579053c8387af7",
+      "reference_kind": "mvtec",
+      "reference_path": "/home/p76147019/ImgGen/v2/data/kodytek_wood_pilot",
+      "reference_sha256": null,
+      "runtime_root": "/home/p76147019/ImgGen/v2/data/kodytek_wood_runtime"
+    }
+  ]
+}

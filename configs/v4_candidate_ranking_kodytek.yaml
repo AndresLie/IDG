@@ -1,0 +1,93 @@
+project:
+  output_dir: outputs/v4_candidate_ranking_kodytek
+  report_dir: reports/v4_candidate_ranking_kodytek
+
+dataset:
+  root: data/kodytek_wood_runtime
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    kodytek_wood: [crack, resin, knot_with_crack]
+
+generation:
+  samples_per_category: 1
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect: {}
+  negative_prompt: "text, watermark, logo, unrealistic artifact"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation: {}
+
+research_governance:
+  enabled: true
+  architecture_tag: v4.2b-kodytek-generic-evidence-development
+  experiment_track: exposed-multidataset-candidate-ranking
+  development_categories: [kodytek_wood]
+  locked_categories: []
+  enforce_official_mask_isolation: true
+  dataset_fingerprint_mode: sha256
+
+auto_masks:
+  architecture: generic_evidence
+  specialists: disabled
+  provider: qwen
+  publish_dataset_ground_truth: false
+  overwrite: true
+  qwen_model: Qwen/Qwen2.5-VL-3B-Instruct
+  qwen_cache_dir: model_cache/huggingface/hub
+  qwen_local_files_only: true
+  qwen_min_free_gib: 30.0
+  qwen_device: auto
+  qwen_dtype: auto
+  qwen_prompt_style: defect_localization_json
+  description_by_target:
+    kodytek_wood/crack: "a narrow natural crack disrupting the material texture"
+    kodytek_wood/resin: "a localized glossy or discolored material inclusion"
+    kodytek_wood/knot_with_crack: "a localized natural inclusion connected to a visible crack"
+  min_box_area_ratio: 0.001
+  max_box_area_ratio: 0.60
+  allow_localization_fallback: true
+  localization_fallback_mode: full_image
+  min_component_area: 12
+  ground_truth_mask_variant: eval_tight
+  eval_mask_variant: eval_tight
+  training_mask_variant: training_medium
+  write_overlays: true
+  write_variant_overlays: false
+  sam_provider: sam2
+  sam2_checkpoint: model_cache/sam2/sam2.1_hiera_tiny.pt
+  sam2_model_cfg: configs/sam2.1/sam2.1_hiera_t.yaml
+  sam_device: cuda
+  dinov2_model: facebook/dinov2-small
+  dinov2_cache_dir: model_cache/huggingface/hub
+  dinov2_local_files_only: true
+  dinov2_device: auto
+  selector_model_path: outputs/v3_generic_evidence_development/auto_masks/selector/generic_selector.joblib
+  generic_evidence:
+    dinov2_enabled: true
+    dinov2_scales: [448, 672]
+    dinov2_layers: [-4, -1]
+    dinov2_memory_stride: 1
+    registered_residual_enabled: true
+    registration_scale: 448
+    registration_min_inlier_ratio: 0.25
+    registration_max_reprojection_error: 8.0
+    musc_enabled: true
+    musc_patch_size: 17
+    musc_stride: 6
+    musc_knn_k: 5
+    musc_max_memory_patches: 4096
+    texture_residual_enabled: true
+    sam2_enabled: true
+    sam_positive_points: 5
+    sam_negative_points: 4
+    max_normals: 16

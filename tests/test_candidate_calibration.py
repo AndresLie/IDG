@@ -8,7 +8,11 @@ from PIL import Image
 
 from iadgen_v2.auto_mask.candidate_calibration import (
     CANDIDATE_FEATURE_NAMES,
+    LIST_RANKING_CONTRACT,
     CrossDatasetCandidateCalibrator,
+    _list_pair_feature_matrix,
+    _list_rank_representation,
+    _select_prediction_row,
     build_arbitration_candidates,
     evidence_augmented_regions,
     regions_to_mask,
@@ -60,6 +64,70 @@ def test_evidence_augmented_regions_recover_signal_outside_semantic_box() -> Non
     assert regions[0] == (3, 4, 22, 25)
     assert mask[60:70, 52:66].all()
     assert mask.mean() < 0.25
+
+
+def test_list_ranking_contract_is_category_free_and_permutation_equivariant() -> None:
+    assert LIST_RANKING_CONTRACT.strategy == "all_pairs_list_rank"
+    assert all(
+        "category" not in name and "defect" not in name
+        for name in LIST_RANKING_CONTRACT.pair_feature_names
+    )
+    matrix = np.asarray(
+        [
+            np.linspace(0.0, 0.5, len(CANDIDATE_FEATURE_NAMES)),
+            np.linspace(0.2, 0.7, len(CANDIDATE_FEATURE_NAMES)),
+            np.linspace(0.1, 0.6, len(CANDIDATE_FEATURE_NAMES)),
+        ],
+        dtype=np.float32,
+    )
+    permutation = np.asarray([2, 0, 1])
+
+    original = _list_rank_representation(matrix)
+    permuted = _list_rank_representation(matrix[permutation])
+
+    assert np.allclose(permuted, original[permutation])
+
+    forward = _list_pair_feature_matrix(matrix, np.asarray([0]), np.asarray([1]))
+    reverse = _list_pair_feature_matrix(matrix, np.asarray([1]), np.asarray([0]))
+    directional = 2 * len(CANDIDATE_FEATURE_NAMES)
+    assert np.allclose(forward[:, :directional], -reverse[:, :directional])
+    assert np.allclose(forward[:, directional:], reverse[:, directional:])
+
+
+def test_list_rank_selection_requires_positive_lower_bound_over_v3() -> None:
+    bundle = {
+        "selection_strategy": "all_pairs_list_rank",
+        "minimum_gain_lower_bound": 0.0,
+        "minimum_expected_iou_gain": 0.01,
+    }
+    baseline = {
+        "mode": "v4_baseline_selected",
+        "is_baseline": True,
+        "list_score": 0.0,
+        "gain_lower_bound": 0.0,
+        "expected_iou": 0.20,
+    }
+    unsafe = {
+        "mode": "compact",
+        "is_baseline": False,
+        "list_score": 0.4,
+        "gain_lower_bound": -0.01,
+        "expected_iou": 0.24,
+    }
+    safe = {**unsafe, "gain_lower_bound": 0.02}
+
+    selected, override = _select_prediction_row(bundle, [baseline, unsafe])
+    assert selected["mode"] == "v4_baseline_selected"
+    assert not override
+
+    selected, override = _select_prediction_row(bundle, [baseline, safe])
+    assert selected["mode"] == "compact"
+    assert override
+
+    disagreement = {**safe, "expected_iou": 0.20}
+    selected, override = _select_prediction_row(bundle, [baseline, disagreement])
+    assert selected["mode"] == "v4_baseline_selected"
+    assert not override
 
 
 def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_path: Path) -> None:
@@ -135,6 +203,7 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
         path=tmp_path / "config.yaml",
         data={
             "candidate_calibration": {
+                "selection_strategy": "all_pairs_list_rank",
                 "sources": sources,
                 "posterior_model_path": str(posterior_path),
                 "model_output_path": str(model_path),
@@ -167,6 +236,8 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
 
     assert manifest["model_sha256"]
     assert set(calibrator.bundle["development_datasets"]) == {"dataset_a", "dataset_b"}
+    assert calibrator.bundle["selection_strategy"] == "all_pairs_list_rank"
+    assert tuple(calibrator.bundle["pair_feature_names"]) == LIST_RANKING_CONTRACT.pair_feature_names
     assert result.baseline.mode == "v4_baseline_selected"
     assert result.predictions
     assert (report_dir / "leave_dataset_out_candidate_metrics.json").exists()
