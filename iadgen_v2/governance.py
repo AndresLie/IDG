@@ -23,6 +23,7 @@ COMMAND_POLICIES = {
     "auto-masks": "runtime",
     "auto-masks-reselect": "runtime",
     "auto-mask-train-selector": "runtime",
+    "auto-mask-train-posterior": "development-training",
     "development-evaluate": "runtime",
     "generate": "runtime",
     "evaluate": "runtime",
@@ -183,6 +184,9 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
     selector_value = auto.get("selector_model_path")
     selector_path = config.resolve_path(str(selector_value)) if selector_value else None
     selector_hash = _sha256_file(selector_path) if selector_path is not None and selector_path.is_file() else None
+    posterior_value = auto.get("posterior_model_path")
+    posterior_path = config.resolve_path(str(posterior_value)) if posterior_value else None
+    posterior_hash = _sha256_file(posterior_path) if posterior_path is not None and posterior_path.is_file() else None
     excluded_operational_keys = {
         "artifact_retention",
         "contact_sheet_max_rows",
@@ -220,6 +224,7 @@ def architecture_core_fingerprint(config: AppConfig) -> str:
             "dinov2": _huggingface_model_identity(config, auto.get("dinov2_model"), auto.get("dinov2_cache_dir")),
         },
         "selector_sha256": selector_hash,
+        "posterior_model_sha256": posterior_hash,
         "code": code_inventory(config)["content_fingerprint"],
     }
     return fingerprint(core)
@@ -557,6 +562,31 @@ def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[
         else:
             record.update({"kind": "missing", "size": None, "sha256": None})
         return [record]
+    if command == "auto-mask-train-posterior":
+        settings = config.data.get("posterior_calibration", {})
+        sources = settings.get("sources", []) if isinstance(settings, dict) else []
+        records = []
+        for index, source in enumerate(sources if isinstance(sources, list) else []):
+            if not isinstance(source, dict):
+                continue
+            reference = source.get("reference", {}) if isinstance(source.get("reference"), dict) else {}
+            for key, value in (
+                ("metadata_path", source.get("metadata_path")),
+                ("reference.manifest_path", reference.get("manifest_path")),
+            ):
+                if not value:
+                    continue
+                path = config.resolve_path(str(value))
+                record = {
+                    "config_key": f"posterior_calibration.sources[{index}].{key}",
+                    "path": str(path),
+                }
+                if path.is_file():
+                    record.update(_artifact_record(path))
+                else:
+                    record.update({"kind": "missing", "size": None, "sha256": None})
+                records.append(record)
+        return records
     if command == "phase4-generate":
         sd15 = config.data.get("models", {}).get("sd15", {})
         if not isinstance(sd15, dict) or not sd15.get("base_model"):
@@ -580,7 +610,7 @@ def configured_artifact_inventory(config: AppConfig, command: str) -> list[dict[
     if not isinstance(auto, dict):
         return []
     records: list[dict[str, Any]] = []
-    for key in ("selector_model_path", "sam2_checkpoint", "sam_checkpoint"):
+    for key in ("selector_model_path", "posterior_model_path", "sam2_checkpoint", "sam_checkpoint"):
         value = auto.get(key)
         if not value:
             continue

@@ -1,0 +1,100 @@
+project:
+  output_dir: outputs/v4_score_to_mask_calibration
+  report_dir: reports/v4_score_to_mask_calibration
+
+dataset:
+  root: data/mvtec_ad
+  download: false
+  seed: 1337
+  adaptation_per_defect: 2
+  targets:
+    bottle: [broken_large, broken_small, contamination]
+    zipper: [broken_teeth, combined, fabric_border, fabric_interior, rough, split_teeth, squeezed_teeth]
+    wood: [color, combined, hole, liquid, scratch]
+    metal_nut: [bent, color, flip, scratch]
+    tile: [crack, glue_strip, gray_stroke, oil, rough]
+
+generation:
+  samples_per_category: 10
+  seed: 1337
+  device: auto
+  image_size: 512
+  placement_mode: surface_constrained
+  prompt_by_defect: {}
+  negative_prompt: "text, watermark, logo, unrealistic artifact"
+
+models:
+  mock:
+    enabled: true
+  sd15:
+    enabled: false
+
+evaluation:
+  visibility_threshold: 0.02
+  segmentation_metrics:
+    threshold: 0.5
+
+research_governance:
+  enabled: true
+  architecture_tag: v4-score-to-mask-development
+  experiment_track: exposed-multidataset-calibration
+  development_categories:
+    - bottle
+    - zipper
+    - wood
+    - metal_nut
+    - tile
+  locked_categories: []
+  enforce_official_mask_isolation: true
+  dataset_fingerprint_mode: sha256
+
+auto_masks:
+  architecture: generic_evidence
+  specialists: disabled
+  provider: qwen
+  posterior_model_path: outputs/v4_score_to_mask_calibration/auto_masks/posterior/score_to_mask.joblib
+  generic_evidence:
+    posterior_enabled: false
+    posterior_override_eval: false
+
+posterior_calibration:
+  seed: 20260810
+  model_output_path: outputs/v4_score_to_mask_calibration/auto_masks/posterior/score_to_mask.joblib
+  report_dir: reports/v4_score_to_mask_calibration/posterior_calibration
+  training_size: 256
+  validation_size: 256
+  max_pixels_per_class_per_image: 256
+  max_iter: 120
+  max_leaf_nodes: 15
+  learning_rate: 0.06
+  l2_regularization: 0.20
+  thresholds: [0.005, 0.01, 0.02, 0.05, 0.10, 0.20, 0.40]
+  seed_threshold: 0.65
+  seed_quantile: 0.995
+  min_component_area: 8
+  max_components: 8
+  max_area_fraction: 0.20
+  growth_factor: 4.0
+  threshold_mode: otsu_floor
+  minimum_output_area_fraction: 0.0
+  fallback_rank_threshold: 0.95
+  fallback_seed_quantile: 0.999
+  fallback_growth_factor: 4.0
+  fallback_max_components: 3
+  target_max_area_ratio: 2.0
+  target_min_precision: 0.30
+  max_dataset_dice_regression: 0.02
+  override_area_ratios: [1.5, 2.0, 3.0, 4.0, 6.0, 8.0]
+  sources:
+    - dataset_id: mvtec_development
+      metadata_path: outputs/as1b_calib_widen/auto_masks/qwen/metadata.jsonl
+      runtime_root: data/mvtec_ad
+      reference:
+        kind: mvtec
+        root: data/mvtec_ad
+    - dataset_id: visa_exposed
+      metadata_path: outputs/v3_generic_evidence_visa/auto_masks/qwen/metadata.jsonl
+      runtime_root: data/visa_runtime
+      reference:
+        kind: manifest
+        manifest_path: data/visa_official_reference_masks/visa_reference_manifest.jsonl

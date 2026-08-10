@@ -118,6 +118,27 @@ Spearman correlation is only `0.0851`. Therefore the current generic auto-mask
 path is not a versatile zero-shot mask generator, and generation Sprint 6 is
 blocked until a new calibration-first architecture passes a new locked test.
 
+### V4.1 Cross-Dataset Calibration Result
+
+The first post-VisA improvement sprint is implemented and evaluated on 1,344
+exposed development images using leave-dataset-out predictions. It learns a
+category-agnostic pixel posterior from robust fused-score rank, local contrast,
+soft Qwen spatial support, and stable normal-reference boundaries. A compact
+component extractor and a broad-mask override guard are integrated but remain
+disabled by default.
+
+| V4.1 Development Row | Macro Dice | Macro Precision | Aggregate Area Ratio | MVTec Dice | VisA Dice |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| V3 input masks | `0.3741` | `0.3647` | `3.1548` | `0.5889` | `0.1593` |
+| Best area-compliant guarded posterior | `0.3506` | `0.3805` | `1.9240` | `0.5244` | `0.1769` |
+| Non-regressing `8x` guard | `0.3674` | `0.3720` | `2.7630` | `0.5702` | `0.1645` |
+
+The posterior materially reduces over-segmentation and slightly improves VisA,
+but it does not preserve the stronger MVTec result while meeting the area gate.
+V4.1 therefore fails promotion. Its main scientific result is that pixel-field
+calibration is insufficient for safe arbitration; V4.2 must operate on real
+candidate quality and localization reliability.
+
 ## Professional Assessment
 
 ### What Is Strong

@@ -146,6 +146,24 @@ class SelectionDecision:
             raise ValueError("SelectionDecision.confidence must be in [0, 1]")
 
 
+@dataclass(frozen=True)
+class PixelPosteriorResult:
+    posterior: np.ndarray
+    compact_mask: np.ndarray
+    threshold: float
+    diagnostics: dict[str, float | int | str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.posterior.ndim != 2:
+            raise ValueError("PixelPosteriorResult.posterior must be a 2D array")
+        if self.compact_mask.shape != self.posterior.shape:
+            raise ValueError("PixelPosteriorResult.compact_mask must match posterior shape")
+        if not np.isfinite(self.posterior).all():
+            raise ValueError("PixelPosteriorResult.posterior must be finite")
+        if not 0.0 <= self.threshold <= 1.0:
+            raise ValueError("PixelPosteriorResult.threshold must be in [0, 1]")
+
+
 class EvidenceProvider(Protocol):
     name: str
 

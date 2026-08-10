@@ -23,6 +23,7 @@ from iadgen_v2.auto_mask.evidence import (
     SubspacePcaDinoProvider,
 )
 from iadgen_v2.auto_mask.pipeline import run_generic_evidence_pipeline
+from iadgen_v2.auto_mask.posterior_calibration import ScoreToMaskCalibrator
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector
 from iadgen_v2.auto_mask.specialists import specialist_applicability
 from iadgen_v2.auto_mask.legacy_structure import infer_structure_attributes, infer_structure_profile
@@ -10720,6 +10721,12 @@ def _run_generic_mask_artifacts(
         Path(str(selector_path)) if selector_path else None,
         edge_swap_margin=float(generic.get("edge_swap_margin", 0.02)),
     )
+    posterior_path = auto.get("posterior_model_path")
+    posterior_calibrator = (
+        ScoreToMaskCalibrator(config.resolve_path(str(posterior_path)))
+        if posterior_path and bool(generic.get("posterior_enabled", False))
+        else None
+    )
     specialist_masks: dict[str, np.ndarray] = {}
     if str(auto.get("specialists", "disabled")) == "structural":
         profile = str(context.semantic_attributes.get("structure_profile", "unknown"))
@@ -10771,6 +10778,8 @@ def _run_generic_mask_artifacts(
         specialist_masks=specialist_masks,
         additive_providers=additive_providers,
         artifact_retention=str(auto.get("artifact_retention", "full")),
+        posterior_calibrator=posterior_calibrator,
+        posterior_override_eval=bool(generic.get("posterior_override_eval", False)),
     )
     artifacts["parameters"]["specialists"] = str(auto.get("specialists", "disabled"))
     artifacts["parameters"]["active_structural_specialists"] = sorted(specialist_masks)

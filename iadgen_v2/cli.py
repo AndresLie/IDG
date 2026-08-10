@@ -30,7 +30,14 @@ from iadgen_v2.r6_evidence import build_r6_evidence_package
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="IADGen v2 research pipeline commands.")
     commands = parser.add_subparsers(dest="command", required=True)
-    for command in ("feasibility", "prepare", "auto-masks", "auto-masks-reselect", "auto-mask-train-selector"):
+    for command in (
+        "feasibility",
+        "prepare",
+        "auto-masks",
+        "auto-masks-reselect",
+        "auto-mask-train-selector",
+        "auto-mask-train-posterior",
+    ):
         sub = commands.add_parser(command)
         sub.add_argument("--config", required=True, type=Path)
         if command == "prepare":
@@ -147,6 +154,10 @@ def _execute_command(args: argparse.Namespace, config: AppConfig, manifest_path:
         from iadgen_v2.auto_mask.selector_training import train_generic_selector
 
         return "generic selector written to", train_generic_selector(config)
+    if args.command == "auto-mask-train-posterior":
+        from iadgen_v2.auto_mask.posterior_calibration import train_score_to_mask_calibrator
+
+        return "posterior calibration manifest written to", train_score_to_mask_calibrator(config)
     if args.command == "prepare":
         download = False if args.no_download else None
         return "split manifest written to", prepare_splits(config, download=download)

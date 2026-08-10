@@ -18,6 +18,7 @@ from iadgen_v2.auto_mask.proposals import (
     proposal_from_mask,
     refine_proposals,
 )
+from iadgen_v2.auto_mask.posterior_calibration import ScoreToMaskCalibrator
 from iadgen_v2.auto_mask.refinement import EdgeAwareRefiner, edge_align_field
 from iadgen_v2.auto_mask.selection import GenericCandidateSelector
 
@@ -36,6 +37,8 @@ def run_generic_evidence_pipeline(
     specialist_masks: dict[str, np.ndarray] | None = None,
     additive_providers: Iterable[EvidenceProvider] | None = None,
     artifact_retention: str = "full",
+    posterior_calibrator: ScoreToMaskCalibrator | None = None,
+    posterior_override_eval: bool = False,
 ) -> dict[str, Any]:
     retention = _artifact_retention_policy(artifact_retention)
     retain_diagnostics = retention == "full"
@@ -100,6 +103,26 @@ def run_generic_evidence_pipeline(
         sam_refiner=sam_refiner,
         edge_refiner=edge_refiner,
     )
+    posterior_result = None
+    posterior_proposal = None
+    if posterior_calibrator is not None:
+        posterior_result = posterior_calibrator.predict(
+            fused,
+            min_component_area=min_component_area,
+            normal_paths=context.normal_paths,
+            semantic_regions=context.semantic_regions,
+        )
+        if posterior_result.compact_mask.any():
+            posterior_proposal = proposal_from_mask(
+                "calibrated_posterior_compact",
+                posterior_result.compact_mask,
+                fused,
+                disagreement,
+                evidence,
+                foreground=context.foreground,
+                region=context.primary_region,
+            )
+            proposals.append(posterior_proposal)
     specialist_proposals: list[CandidateProposal] = []
     for mode, mask in (specialist_masks or {}).items():
         try:
@@ -154,7 +177,22 @@ def run_generic_evidence_pipeline(
     decision, predictions = selector.select(proposals)
     if decision.selected_mode is None:
         raise ValueError("Generic selector abstained without a usable positive core")
-    selected = next(proposal for proposal in proposals if proposal.mode == decision.selected_mode)
+    selector_selected = next(proposal for proposal in proposals if proposal.mode == decision.selected_mode)
+    posterior_override_applied = bool(
+        posterior_override_eval
+        and posterior_proposal is not None
+        and posterior_result is not None
+        and (
+            posterior_calibrator.should_override(selector_selected.mask, posterior_result)
+            if hasattr(posterior_calibrator, "should_override")
+            else True
+        )
+    )
+    selected = (
+        posterior_proposal
+        if posterior_override_applied
+        else selector_selected
+    )
     candidate_paths: dict[str, str] = {}
     candidate_scores: dict[str, float] = {}
     candidate_measurements: dict[str, dict[str, float]] = {}
@@ -167,6 +205,8 @@ def run_generic_evidence_pipeline(
         candidate_measurements[proposal.mode] = dict(proposal.measurements)
 
     roles = posterior_mask_roles(fused, disagreement, evidence, selected, decision)
+    if posterior_result is not None:
+        roles["calibrated_posterior"] = posterior_result.posterior
     variant_paths: dict[str, str] = {}
     for name, values in roles.items():
         path = variant_dir / f"{artifact_stem}_{name}.png"
@@ -217,12 +257,21 @@ def run_generic_evidence_pipeline(
             else {}
         ),
         "policy_scores": {row["mode"]: row["conformal_iou_lower_bound"] for row in prediction_rows},
-        "selection_policy": "generic_calibrated_reliability",
+        "selection_policy": (
+            "generic_score_to_mask_posterior"
+            if posterior_override_applied
+            else "generic_calibrated_reliability"
+        ),
         "selection_arbitration": {
             "applied": True,
-            "reason": "highest_conformal_iou_lower_bound",
+            "reason": (
+                "calibrated_posterior_override"
+                if posterior_override_applied
+                else "highest_conformal_iou_lower_bound"
+            ),
             "initial_selected_refinement": proposals[0].mode,
             "final_selected_refinement": selected.mode,
+            "selector_selected_refinement": selector_selected.mode,
         },
         "selection_decision": asdict(decision),
         "scratch_morphology_class": "generic",
@@ -231,7 +280,7 @@ def run_generic_evidence_pipeline(
         "label_policy": label_policy,
         "parameters": {
             "kind": "generic_evidence",
-            "architecture": "v3-generic-evidence",
+            "architecture": "v4-generic-evidence" if posterior_result is not None else "v3-generic-evidence",
             "artifact_retention": retention,
             "fused_evidence_path": str(fused_path),
             "source_disagreement_path": str(disagreement_path) if disagreement_path is not None else None,
@@ -253,6 +302,19 @@ def run_generic_evidence_pipeline(
                 for item in evidence
             },
             "selected_prediction": selected_prediction,
+            "score_to_mask_posterior": (
+                {
+                    "enabled": True,
+                    "override_eval": posterior_override_applied,
+                    "override_area_ratio": float(
+                        getattr(posterior_calibrator, "bundle", {}).get("override_area_ratio", 0.0)
+                    ),
+                    "threshold": posterior_result.threshold,
+                    "diagnostics": posterior_result.diagnostics,
+                }
+                if posterior_result is not None
+                else {"enabled": False, "override_eval": False}
+            ),
             "mask_variants": {name: {"purpose": _role_purpose(name)} for name in variant_paths},
         },
         "qc": {
@@ -296,4 +358,5 @@ def _role_purpose(name: str) -> str:
         "possible_region": "broad plausible anomaly support",
         "uncertainty_map": "source, registration, and boundary disagreement",
         "inpaint_soft": "soft generation envelope",
+        "calibrated_posterior": "cross-dataset calibrated anomaly probability",
     }.get(name, name)

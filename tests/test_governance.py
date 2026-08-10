@@ -256,6 +256,39 @@ def test_visa_preparation_manifest_hashes_archive_and_official_split(tmp_path: P
     ]
 
 
+def test_posterior_training_manifest_hashes_calibration_inputs(tmp_path: Path) -> None:
+    metadata = tmp_path / "metadata.jsonl"
+    reference = tmp_path / "references.jsonl"
+    metadata.write_bytes(b"metadata")
+    reference.write_bytes(b"references")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+        )
+    )
+    config.data["posterior_calibration"] = {
+        "sources": [
+            {
+                "dataset_id": "development",
+                "metadata_path": str(metadata),
+                "reference": {"kind": "manifest", "manifest_path": str(reference)},
+            }
+        ]
+    }
+
+    records = configured_artifact_inventory(config, "auto-mask-train-posterior")
+
+    assert [row["config_key"] for row in records] == [
+        "posterior_calibration.sources[0].metadata_path",
+        "posterior_calibration.sources[0].reference.manifest_path",
+    ]
+    assert [row["sha256"] for row in records] == [
+        hashlib.sha256(b"metadata").hexdigest(),
+        hashlib.sha256(b"references").hexdigest(),
+    ]
+
+
 def test_generalization_contracts_validate_shapes_confidence_and_disposition() -> None:
     values = np.zeros((8, 8), dtype=np.float32)
     evidence = EvidenceMap(source="normal_memory", values=values, reliability=0.8)
@@ -322,6 +355,27 @@ def test_architecture_fingerprint_covers_behavior_but_not_operational_device(tmp
     assert architecture_core_fingerprint(config) != original
     config.data["auto_masks"].pop("max_images_per_target")
     config.data["auto_masks"]["generic_evidence"]["sam_positive_points"] = 7
+    assert architecture_core_fingerprint(config) != original
+
+
+def test_architecture_fingerprint_covers_posterior_model_content(tmp_path: Path) -> None:
+    posterior = tmp_path / "posterior.joblib"
+    posterior.write_bytes(b"posterior-v1")
+    config = load_config(
+        _config_path(
+            tmp_path,
+            governance=["  development_categories: [part]", "  locked_categories: []"],
+            extra=[
+                "auto_masks:",
+                "  architecture: generic_evidence",
+                f"  posterior_model_path: {posterior}",
+            ],
+        )
+    )
+
+    original = architecture_core_fingerprint(config)
+    posterior.write_bytes(b"posterior-v2")
+
     assert architecture_core_fingerprint(config) != original
 
 
