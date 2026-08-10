@@ -11,8 +11,8 @@ Runtime run:
 ```text
 run_id: 20260726T160703Z-fcd6745c
 runtime samples expected: 1,200
-runtime samples completed: 1,070
-progress: 89.17%
+runtime samples completed: 1,115
+progress: 92.92%
 ```
 
 ## Resume Validation
@@ -248,6 +248,16 @@ A twenty-sixth bounded command:
 - removed all 14 row-070 artifacts as one incomplete unit, preserving every
   durable row and the sealed reference boundary.
 
+A twenty-seventh bounded command:
+
+- resumed all 1,070 checkpoint rows and incremented `resume_count` to 27;
+- completed the final 30 pcb4 rows and added the first 15 pipe_fryum rows;
+- stopped at 1,115 unique records using one manual interrupt;
+- interrupted during generic proposal construction for uncheckpointed
+  pipe_fryum `015`;
+- removed its single fused-evidence artifact, leaving exactly 14 readable PNGs
+  for every durable row and preserving the sealed reference boundary.
+
 Current checkpoint:
 
 ```text
@@ -262,8 +272,8 @@ incomplete locked run.
 
 | Observation | Value |
 | --- | ---: |
-| Completed rows | `1,070 / 1,200` |
-| Current run artifacts | `4,813.3 MiB` |
+| Completed rows | `1,115 / 1,200` |
+| Current run artifacts | `5,014.4 MiB` |
 | Previous exact rate, first 60 rows | `17.825 s/image` |
 | Latest exact rate, next 55 rows | `17.700 s/image` |
 | Fourth-segment rate, 44 capsule rows | `21.814 s/image` |
@@ -311,11 +321,13 @@ incomplete locked run.
 | Recovery-finalizer runtime | `67.524 s` for one additional row |
 | Twenty-sixth-segment rate, 45 pcb4 rows | `19.934 s/image` |
 | Twenty-sixth-vs-primary twenty-fifth rate change | `+7.14%` |
-| Cumulative productive rate including recovery | `21.185 s/image` |
-| Projected remaining compute | approximately `0.77 hours` |
-| Projected total compute | approximately `7.06 hours` |
+| Twenty-seventh-segment rate, 45 transition rows | `20.502 s/image` |
+| Twenty-seventh-vs-twenty-sixth rate change | `+2.85%` |
+| Cumulative productive rate including recovery | `21.158 s/image` |
+| Projected remaining compute | approximately `0.50 hours` |
+| Projected total compute | approximately `7.05 hours` |
 | Linear artifact projection | approximately `5.27 GiB` |
-| Free storage after checkpoint | approximately `8.16 GiB` |
+| Free storage after checkpoint | approximately `7.92 GiB` |
 
 The zero-row restricted-sandbox attempt is excluded from productive throughput.
 The projection is operational only. Category transitions and cache reuse may
@@ -323,8 +335,8 @@ change the final rate and footprint.
 
 ## Unscored Diagnostics
 
-The checkpoint now contains ten complete categories plus the first 70 pcb4
-anomalies:
+The checkpoint now contains eleven complete categories plus the first 15
+pipe_fryum anomalies:
 
 ```text
 candle: 100
@@ -337,36 +349,37 @@ macaroni2: 100
 pcb1: 100
 pcb2: 100
 pcb3: 100
-pcb4: 70
+pcb4: 100
+pipe_fryum: 15
 
-needs_review: 566
-soft_mask_only: 504
+needs_review: 568
+soft_mask_only: 547
 hard_mask_ok: 0
 ```
 
-Selected proposal modes over all 1,070 rows:
+Selected proposal modes over all 1,115 rows:
 
 ```text
 fused_q975: 207
 fused_q950: 188
 fused_q900: 72
-fused_q950_component_1: 58
+fused_q950_component_1: 60
 fused_q975_component_1: 19
-fused_q900_component_1: 67
-fused_q850_component_1: 128
-fused_q850: 17
+fused_q900_component_1: 85
+fused_q850_component_1: 134
+fused_q850: 18
 sam2_fused_q850_1: 50
-edge_fused_q900_component_1_2: 22
+edge_fused_q900_component_1_2: 24
 edge_fused_q850_component_1_1: 22
-edge_fused_q900_component_1_1: 4
-edge_fused_q850_component_1_2: 42
-fused_q900_component_2: 24
+edge_fused_q900_component_1_1: 5
+edge_fused_q850_component_1_2: 49
+fused_q900_component_2: 26
 edge_fused_q850_1: 15
-edge_fused_q850_2: 47
+edge_fused_q850_2: 48
 edge_fused_q900_1: 19
-edge_fused_q900_2: 28
-fused_q850_component_2: 24
-edge_fused_q900_component_2_2: 3
+edge_fused_q900_2: 29
+fused_q850_component_2: 26
+edge_fused_q900_component_2_2: 5
 fused_q900_component_3: 7
 edge_fused_q850_component_2_1: 2
 fused_q950_component_2: 2
@@ -914,6 +927,46 @@ risk separation observed in the external cohort, but official overlap is still
 required to determine whether the four abstentions identify genuinely worse
 masks.
 
+The final 30 pcb4 rows preserve that selective regime:
+
+```text
+soft_mask_only: 28/30
+needs_review: 2/30
+mean expected IoU: 0.2891
+mean conformal IoU lower bound: 0.1536
+mean source disagreement: 0.4003
+mean selected-mask area: 0.0632
+Qwen valid localization: 30/30
+structure profile: ring_sector 29, repeated_chain 1
+```
+
+The two review rows are pcb4 `085` and `097`. Completed pcb4 therefore contains
+94 `soft_mask_only` and six `needs_review` decisions. Mean expected IoU is
+`0.2866`, mean lower bound is `0.1511`, mean disagreement is `0.4168`, and mean
+selected area is `0.0726`. Qwen localization is valid for all 100 rows. The
+completion confirms sparse risk separation rather than the uniform acceptance
+seen in pcb3, but locked overlap is still required to determine whether the six
+review decisions are useful abstentions.
+
+The first 15 pipe_fryum rows enter the strongest calibrated-confidence regime
+in the current checkpoint:
+
+```text
+soft_mask_only: 15/15
+mean expected IoU: 0.4766
+mean conformal IoU lower bound: 0.3411
+mean source disagreement: 0.4897
+mean selected-mask area: 0.0661
+Qwen valid localization: 14/15
+Qwen full-image fallback: 1/15
+structure profile: ring_sector 15/15
+```
+
+Ten of the 15 rows select `fused_q900_component_1`. Confidence remains high on
+the one localization fallback, consistent with the soft-prior architecture.
+The small opening slice and concentrated selected mode are transfer diagnostics,
+not evidence that pipe_fryum masks are accurate.
+
 These are serious confidence-transfer warnings, but they are not official mask
 quality measurements. The preregistered run must complete before opening
 official masks or changing selector thresholds.
@@ -922,7 +975,7 @@ Checkpoint integrity:
 
 ```text
 partial metadata SHA-256:
-826511948b8a389285843a68cfd4c9fe8cfead069da2c47ced20db14c9478ed0
+ad3e05bf745f76a35b68834915e0ab2146c96681d889f9f6d91295056a497bb5
 
 architecture fingerprint:
 f946c2ea91eaa6e3727f1f0c2d13fc5518e0daf113404638c1288b90721daf23
