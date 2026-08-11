@@ -14,6 +14,10 @@ from scipy.stats import rankdata, spearmanr
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.isotonic import IsotonicRegression
 
+from iadgen_v2.auto_mask.area_calibrated_proposals import (
+    CandidateAreaCalibrationContract,
+    generate_area_calibrated_candidates,
+)
 from iadgen_v2.auto_mask.contracts import PixelPosteriorResult
 from iadgen_v2.auto_mask.posterior_calibration import (
     ScoreToMaskCalibrator,
@@ -24,6 +28,7 @@ from iadgen_v2.records import write_json
 
 
 CANDIDATE_CALIBRATION_SCHEMA_VERSION = 1
+CANDIDATE_ROW_CACHE_SCHEMA_VERSION = 1
 CANDIDATE_SELECTION_STRATEGIES = (
     "baseline_guarded_candidate_gain",
     "all_pairs_list_rank",
@@ -218,6 +223,9 @@ class CrossDatasetCandidateCalibrator:
             quantiles=tuple(float(value) for value in self.bundle.get("candidate_quantiles", (0.85, 0.90, 0.95, 0.975))),
             max_components=int(self.bundle.get("max_components_per_quantile", 4)),
             localization_envelope=bool(self.bundle.get("localization_envelope", False)),
+            area_calibration=CandidateAreaCalibrationContract.from_mapping(
+                self.bundle.get("area_calibrated_proposals")
+            ),
         )
         prediction_rows = _predict_candidates(self.bundle, candidates)
         baseline = candidates[0]
@@ -245,6 +253,7 @@ def build_arbitration_candidates(
     quantiles: tuple[float, ...] = (0.85, 0.90, 0.95, 0.975),
     max_components: int = 4,
     localization_envelope: bool = False,
+    area_calibration: CandidateAreaCalibrationContract | None = None,
 ) -> tuple[list[ArbitrationCandidate], tuple[tuple[int, int, int, int], ...]]:
     fused = _probability(fused)
     disagreement = _probability(disagreement)
@@ -281,6 +290,12 @@ def build_arbitration_candidates(
                     True,
                 )
             )
+    for proposal in generate_area_calibrated_candidates(
+        fused,
+        contract=area_calibration or CandidateAreaCalibrationContract(),
+        min_component_area=min_component_area,
+    ):
+        masks.append((proposal.mode, proposal.mask, proposal.quantile, False, True))
     unique: list[tuple[str, np.ndarray, float, bool, bool]] = []
     seen: set[bytes] = set()
     for mode, mask, quantile, is_posterior, is_component in masks:
@@ -421,6 +436,9 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
     max_components = int(settings.get("max_components_per_quantile", 4))
     min_component_area = int(settings.get("min_component_area", 8))
     localization_envelope = bool(settings.get("localization_envelope", False))
+    area_calibration = CandidateAreaCalibrationContract.from_mapping(
+        settings.get("area_calibrated_proposals")
+    )
     selection_strategy = str(settings.get("selection_strategy", "baseline_guarded_candidate_gain"))
     if selection_strategy not in CANDIDATE_SELECTION_STRATEGIES:
         raise ValueError(
@@ -434,14 +452,18 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
             f"{CANDIDATE_RISK_CALIBRATION_MODES}, got {risk_calibration!r}"
         )
     decision_contract = _decision_contract_from_settings(settings)
-    rows, sample_rows = _build_training_rows(
-        sources,
-        posterior,
+    row_cache_value = settings.get("candidate_row_cache_path")
+    row_cache_path = config.resolve_path(str(row_cache_value)) if row_cache_value else None
+    rows, sample_rows, row_cache = _load_or_build_training_rows(
+        sources=sources,
+        posterior=posterior,
+        cache_path=row_cache_path,
         size=size,
         quantiles=quantiles,
         max_components=max_components,
         min_component_area=min_component_area,
         localization_envelope=localization_envelope,
+        area_calibration=area_calibration,
     )
     datasets = sorted({str(row["dataset_id"]) for row in rows})
     if len(datasets) < 2:
@@ -501,6 +523,7 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
             "candidate_quantiles": list(quantiles),
             "max_components_per_quantile": max_components,
             "localization_envelope": localization_envelope,
+            "area_calibrated_proposals": area_calibration.to_dict(),
             "minimum_gain_lower_bound": minimum_gain_lower_bound,
             "development_datasets": datasets,
             "training_candidate_count": len(rows),
@@ -544,6 +567,7 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
             "report_path": str(report_path),
             "report_sha256": _sha256_file(report_path),
             "promotion_passed": bool(overall["promotion_passed"]),
+            "candidate_row_cache": row_cache,
             "sources": [
                 {
                     "dataset_id": source.dataset_id,
@@ -616,6 +640,153 @@ def _candidate_features(
     return {name: float(features[name]) for name in CANDIDATE_FEATURE_NAMES}
 
 
+def _load_or_build_training_rows(
+    *,
+    sources: list[CandidateCalibrationSource],
+    posterior: ScoreToMaskCalibrator,
+    cache_path: Path | None,
+    size: int,
+    quantiles: tuple[float, ...],
+    max_components: int,
+    min_component_area: int,
+    localization_envelope: bool,
+    area_calibration: CandidateAreaCalibrationContract,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    if cache_path is None:
+        rows, sample_rows = _build_training_rows(
+            sources,
+            posterior,
+            size=size,
+            quantiles=quantiles,
+            max_components=max_components,
+            min_component_area=min_component_area,
+            localization_envelope=localization_envelope,
+            area_calibration=area_calibration,
+        )
+        return rows, sample_rows, {"enabled": False, "cache_hit": False}
+
+    fingerprint = _candidate_row_cache_fingerprint(
+        sources=sources,
+        posterior=posterior,
+        size=size,
+        quantiles=quantiles,
+        max_components=max_components,
+        min_component_area=min_component_area,
+        localization_envelope=localization_envelope,
+        area_calibration=area_calibration,
+    )
+    cache_hit = False
+    if cache_path.is_file():
+        loaded = joblib.load(cache_path)
+        if not isinstance(loaded, dict) or int(loaded.get("schema_version", 0)) != CANDIDATE_ROW_CACHE_SCHEMA_VERSION:
+            raise ValueError(f"Unsupported candidate-row cache: {cache_path}")
+        if str(loaded.get("fingerprint", "")) == fingerprint:
+            rows = loaded.get("rows")
+            sample_rows = loaded.get("sample_rows")
+            if not isinstance(rows, list) or not isinstance(sample_rows, list):
+                raise ValueError(f"Malformed candidate-row cache: {cache_path}")
+            cache_hit = True
+        else:
+            rows, sample_rows = _build_training_rows(
+                sources,
+                posterior,
+                size=size,
+                quantiles=quantiles,
+                max_components=max_components,
+                min_component_area=min_component_area,
+                localization_envelope=localization_envelope,
+                area_calibration=area_calibration,
+            )
+    else:
+        rows, sample_rows = _build_training_rows(
+            sources,
+            posterior,
+            size=size,
+            quantiles=quantiles,
+            max_components=max_components,
+            min_component_area=min_component_area,
+            localization_envelope=localization_envelope,
+            area_calibration=area_calibration,
+        )
+
+    if not cache_hit:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
+        joblib.dump(
+            {
+                "schema_version": CANDIDATE_ROW_CACHE_SCHEMA_VERSION,
+                "fingerprint": fingerprint,
+                "rows": rows,
+                "sample_rows": sample_rows,
+            },
+            temporary_path,
+            compress=3,
+        )
+        temporary_path.replace(cache_path)
+    return rows, sample_rows, {
+        "enabled": True,
+        "cache_hit": cache_hit,
+        "path": str(cache_path),
+        "sha256": _sha256_file(cache_path),
+        "fingerprint": fingerprint,
+        "candidate_count": len(rows),
+        "image_count": len(sample_rows),
+    }
+
+
+def _candidate_row_cache_fingerprint(
+    *,
+    sources: list[CandidateCalibrationSource],
+    posterior: ScoreToMaskCalibrator,
+    size: int,
+    quantiles: tuple[float, ...],
+    max_components: int,
+    min_component_area: int,
+    localization_envelope: bool,
+    area_calibration: CandidateAreaCalibrationContract,
+) -> str:
+    contract = {
+        "schema_version": CANDIDATE_ROW_CACHE_SCHEMA_VERSION,
+        "posterior_model_sha256": _sha256_file(posterior.model_path),
+        "validation_size": size,
+        "candidate_quantiles": quantiles,
+        "max_components_per_quantile": max_components,
+        "min_component_area": min_component_area,
+        "localization_envelope": localization_envelope,
+        "area_calibrated_proposals": area_calibration.to_dict(),
+        # Candidate construction is independent of model-training hyperparameters.
+        "feature_names": CANDIDATE_FEATURE_NAMES,
+    }
+    digest = hashlib.sha256(json.dumps(contract, sort_keys=True).encode("utf-8"))
+    for source in sorted(sources, key=lambda item: item.dataset_id):
+        digest.update(source.dataset_id.encode("utf-8"))
+        digest.update(_sha256_file(source.metadata_path).encode("ascii"))
+        if source.reference_path.is_file():
+            digest.update(_sha256_file(source.reference_path).encode("ascii"))
+        samples = _source_samples(source)
+        paths = {
+            path.resolve()
+            for sample in samples
+            for path in (
+                sample.fused_path,
+                sample.baseline_mask_path,
+                sample.truth_path,
+                *((sample.uncertainty_path,) if sample.uncertainty_path is not None else ()),
+                *sample.normal_paths,
+            )
+            if path.is_file()
+        }
+        for path in sorted(paths, key=str):
+            digest.update(str(path).encode("utf-8"))
+            digest.update(_sha256_file(path).encode("ascii"))
+        dimensions = []
+        for sample in samples:
+            with Image.open(sample.image_path) as image:
+                dimensions.append((sample.sample_id, image.size))
+        digest.update(json.dumps(dimensions, sort_keys=True).encode("utf-8"))
+    return digest.hexdigest()
+
+
 def _build_training_rows(
     sources: list[CandidateCalibrationSource],
     posterior: ScoreToMaskCalibrator,
@@ -625,6 +796,7 @@ def _build_training_rows(
     max_components: int,
     min_component_area: int,
     localization_envelope: bool,
+    area_calibration: CandidateAreaCalibrationContract,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows = []
     sample_rows = []
@@ -656,6 +828,7 @@ def _build_training_rows(
                 quantiles=quantiles,
                 max_components=max_components,
                 localization_envelope=localization_envelope,
+                area_calibration=area_calibration,
             )
             region_mask = regions_to_mask(fused.shape, augmented_regions)
             sample_rows.append(

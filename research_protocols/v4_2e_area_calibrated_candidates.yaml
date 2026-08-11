@@ -1,0 +1,48 @@
+protocol: v4.2e-area-calibrated-candidate-generation
+status: preregistered-before-run
+purpose: improve cross-domain candidate precision and oracle capacity without selector retuning
+design_input:
+  v4_2d_macro_selected_dice: 0.3721590660
+  v4_2d_macro_oracle_dice: 0.4886801940
+  v4_2d_visa_oracle_dice: 0.3582756500
+  v4_2d_macro_selected_area_ratio: 2.54
+  diagnosis: candidate over-segmentation under domain shift is the dominant shared failure
+datasets:
+  - id: mvtec_development
+    role: exposed-development
+  - id: visa_exposed
+    role: exposed-development
+  - id: kodytek_exposed
+    role: exposed-development
+  - id: btad_exposed
+    role: exposed-development
+  - id: ksdd2_exposed
+    role: exposed-development
+proposal_change:
+  relationship_to_v4_2d: strict-superset; every legacy binary candidate is retained byte-identically
+  family: category-free evidence-density-ranked component unions with bounded area
+  quantiles: [0.90, 0.95, 0.975]
+  component_counts: [2, 4, 8]
+  seed_quantile: 0.99
+  support_quantiles: [0.90, 0.95]
+  maximum_area_fraction: 0.10
+selector:
+  ranking: inherited V4.2d source-calibrated all-pairs list ranker
+  decision_calibration: inherited nested source-jackknife list-score margin
+  threshold_grid: [0.005, 0.01, 0.02, 0.03, 0.05]
+  retuning_rule: no manual threshold or source-specific adjustment after results are observed
+firewall:
+  runtime_inputs: normal images plus unlabeled anomalous images
+  official_masks: exposed-development candidate labeling and evaluation only
+  proposal_inputs: fused evidence only; no category or defect names
+primary_endpoint: leave_dataset_out_dataset_macro_oracle_dice_gain
+proposal_gates:
+  minimum_macro_oracle_dice_gain: 0.01
+  minimum_visa_oracle_dice_gain: 0.03
+  maximum_per_dataset_oracle_dice_regression: 0.0
+deployment_guard:
+  maximum_macro_selected_dice_regression: 0.005
+cache_contract:
+  content_fingerprint: posterior model plus source metadata, references, masks, evidence, and normal exemplars
+  invalidation: rebuild on any fingerprint or proposal-contract change
+analysis_rule: retain V4.2d deployment fallback unless proposal and deployment gates both pass

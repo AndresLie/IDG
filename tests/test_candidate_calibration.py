@@ -6,6 +6,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
+from iadgen_v2.auto_mask.area_calibrated_proposals import (
+    CandidateAreaCalibrationContract,
+    generate_area_calibrated_candidates,
+)
 from iadgen_v2.auto_mask.candidate_calibration import (
     CANDIDATE_FEATURE_NAMES,
     LIST_RANKING_CONTRACT,
@@ -67,6 +71,71 @@ def test_evidence_augmented_regions_recover_signal_outside_semantic_box() -> Non
     assert regions[0] == (3, 4, 22, 25)
     assert mask[60:70, 52:66].all()
     assert mask.mean() < 0.25
+
+
+def test_area_calibrated_candidates_add_bounded_evidence_ranked_unions() -> None:
+    fused = np.zeros((64, 64), dtype=np.float32)
+    for index, value in enumerate(np.linspace(0.99, 0.72, 10)):
+        top = 2 + (index // 5) * 24
+        left = 2 + (index % 5) * 12
+        fused[top : top + 4, left : left + 4] = value
+    contract = CandidateAreaCalibrationContract(
+        enabled=True,
+        quantiles=(0.90,),
+        component_counts=(2, 4, 8),
+        seed_quantile=0.99,
+        support_quantiles=(0.90,),
+        max_components=10,
+        max_area_fraction=0.03,
+    )
+
+    proposals = generate_area_calibrated_candidates(
+        fused,
+        contract=contract,
+        min_component_area=4,
+    )
+    by_mode = {proposal.mode: proposal for proposal in proposals}
+
+    assert "v4_evidence_union_q900_top2" in by_mode
+    assert "v4_evidence_union_q900_top4" in by_mode
+    assert "v4_evidence_union_q900_top8" not in by_mode
+    assert int(by_mode["v4_evidence_union_q900_top2"].mask.sum()) == 32
+    assert all(float(proposal.mask.mean()) <= 0.03 for proposal in proposals)
+
+
+def test_area_calibrated_pool_is_strictly_additive_to_legacy_candidates() -> None:
+    fused = np.full((64, 64), 0.01, dtype=np.float32)
+    fused[8:16, 8:16] = 0.99
+    fused[40:48, 40:48] = 0.95
+    fused[8:16, 40:48] = 0.90
+    baseline = fused > 0.98
+    posterior = PixelPosteriorResult(fused, baseline, 0.5)
+    common = {
+        "baseline_mask": baseline,
+        "fused": fused,
+        "disagreement": np.zeros_like(fused),
+        "posterior_result": posterior,
+        "min_component_area": 4,
+        "quantiles": (0.90,),
+        "max_components": 4,
+    }
+
+    legacy, _ = build_arbitration_candidates(**common)
+    expanded, _ = build_arbitration_candidates(
+        **common,
+        area_calibration=CandidateAreaCalibrationContract(
+            enabled=True,
+            quantiles=(0.90,),
+            component_counts=(2,),
+            seed_quantile=0.99,
+            support_quantiles=(0.90,),
+            max_components=4,
+            max_area_fraction=0.10,
+        ),
+    )
+
+    assert {candidate.mode for candidate in legacy} <= {candidate.mode for candidate in expanded}
+    assert any(candidate.mode.startswith("v4_evidence_union_") for candidate in expanded)
 
 
 def test_list_ranking_contract_is_category_free_and_permutation_equivariant() -> None:
@@ -285,12 +354,28 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
                 "candidate_quantiles": [0.85, 0.95],
                 "max_components_per_quantile": 2,
                 "min_component_area": 4,
+                "candidate_row_cache_path": str(tmp_path / "candidate_rows.joblib"),
+                "area_calibrated_proposals": {
+                    "enabled": True,
+                    "quantiles": [0.90],
+                    "component_counts": [2],
+                    "seed_quantile": 0.99,
+                    "support_quantiles": [0.90],
+                    "max_components": 4,
+                    "max_area_fraction": 0.10,
+                },
             }
         },
     )
 
     manifest_path = train_cross_dataset_candidate_calibrator(config)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["candidate_row_cache"]["enabled"]
+    assert not manifest["candidate_row_cache"]["cache_hit"]
+    train_cross_dataset_candidate_calibrator(config)
+    cached_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert cached_manifest["candidate_row_cache"]["cache_hit"]
+    assert cached_manifest["candidate_row_cache"]["fingerprint"] == manifest["candidate_row_cache"]["fingerprint"]
     calibrator = CrossDatasetCandidateCalibrator(model_path)
     fused = np.full((48, 48), 0.04, dtype=np.float32)
     fused[10:18, 25:32] = 0.96
