@@ -102,3 +102,9 @@ that study requires a new preregistration and must preserve the V4.2d fallback.
 - Metrics SHA-256:
   `06717691fc2ec0bd94866fbbbf8b17e01c656f5661a5cc9b8532ca6fd3b0e4c8`
 - Automated tests: `292 passed`
+
+A cache-hit rerun completed in `2,072.77 s` and reproduced the candidate cache,
+model, metrics JSON, generated Markdown report, architecture fingerprint,
+package fingerprint, model fingerprint, config fingerprints, and split
+fingerprint exactly. It is `17.18%` faster than the initial `2,502.87 s` run.
+The promotion decision remains unchanged.
