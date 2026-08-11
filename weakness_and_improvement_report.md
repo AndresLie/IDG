@@ -892,6 +892,45 @@ within-component boundary precision using category-free source-consensus seeds
 and uncertainty-aware growth, with a bounded candidate budget. It must improve
 VisA oracle quality without increasing the pool by another `50%`.
 
+## 1h. V4.2f bounded uncertainty-contour result (2026-08-11)
+
+V4.2f implemented that bounded study. It retained every V4.2d candidate,
+disabled V4.2e unions, and added exactly three category-free seeded contours per
+image. Contour confidence combines fused-evidence and posterior within-image
+mid-ranks and suppresses boundaries where evidence sources disagree.
+
+| Dataset | V4.2d oracle | V4.2f oracle | Oracle gain | V4.2d selected | V4.2f selected |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| BTAD | `0.3218` | `0.3488` | `+0.0271` | `0.2305` | `0.2344` |
+| Kodytek | `0.4951` | `0.5139` | `+0.0189` | `0.3625` | `0.3164` |
+| KSDD2 | `0.6144` | `0.6297` | `+0.0153` | `0.5274` | `0.5274` |
+| MVTec development | `0.6539` | `0.6576` | `+0.0037` | `0.5811` | `0.5948` |
+| VisA exposed | `0.3583` | `0.3601` | `+0.0018` | `0.1593` | `0.1593` |
+| **Dataset macro** | **`0.4887`** | **`0.5020`** | **`+0.0134`** | **`0.3722`** | **`0.3664`** |
+
+The mechanism is efficient and real, but not promotable:
+
+- Macro oracle gain passes (`+0.0134 >= +0.01`) and all five source oracles are
+  non-regressive.
+- VisA oracle improves only `+0.0018`, far below the preregistered `+0.03`
+  primary endpoint.
+- Candidate count grows `27,816 -> 32,244` (`+15.92%`), passing the `20%` cap.
+  V4.2f reaches within `0.0008` of V4.2e oracle Dice with `9,394` fewer
+  candidates.
+- Selected Dice regresses `-0.00571`, narrowly exceeding the `0.005` guard.
+  Kodytek loses its V4.2d overrides (`0.3625 -> 0.3164`) after refitting.
+- Macro expected-IoU MAE is `0.0908`, but Kodytek reaches `0.1264`, so the
+  evaluator's stricter all-source `<= 0.12` gate fails.
+- New contours are strict oracle winners on `125/1,476` images but are selected
+  on only `12`; seven selected cases are weak VisA masks.
+
+The result is better engineering than V4.2e, not better generalization. Fixed
+contours improve compact BTAD/KSDD2 defects but barely move the intended VisA
+failure. Do not add more global contour thresholds. Keep V4.2f default-off and
+retain V4.2d as fallback. Any continuation should allocate contours only when a
+category-free admission model detects localized boundary uncertainty, and must
+be preregistered as a new study.
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.
@@ -1135,6 +1174,7 @@ post-confirmation ablations, not automatic implementation tasks.
 | **V4.2c** | Broader cross-domain selective-risk calibration | ✅ Complete; promotion gate failed | Added pinned, isolated BTAD and KSDD2 exposed-development sources and ran five-source leave-dataset-out source-jackknife calibration over `1,476` images / `27,816` candidates. All five folds abstain completely: macro Dice remains `0.3626`, MVTec pair coverage is `0.5747`, and BTAD search recall is `0.6315`. | Keep default-off. Broader sources prove that a global all-pairs residual is both over-conservative at decision time and non-exchangeable on MVTec. |
 | **V4.2d** | Nested source-held-out decision calibration | ✅ Complete; promotion gate narrowly failed | Replaced the decision-time global residual with a preregistered nested source-jackknife list-margin policy. Macro Dice improves `0.3626 -> 0.3722` (`+0.00957`), regret falls `0.1261 -> 0.1165`, BTAD gains `+0.0096`, Kodytek gains `+0.0460`, and MVTec changes `-0.0078`. KSDD2 and VisA fail closed. All `288` tests pass. | Keep implementation and evidence, but leave default-off: utility misses `+0.01` by `0.00043`, two folds cannot calibrate an active threshold, and BTAD localization remains below gate. Next address fragmented-defect localization without selector retuning. |
 | **V4.2e** | Cross-domain area-calibrated additive candidates | ✅ Complete; proposal gate partially passed, deployment failed | Added a strict-superset category-free pool of evidence-ranked component unions and seeded support masks, plus content-fingerprinted candidate-row caching. Across `1,476` images / `41,638` candidates, macro oracle Dice improves `0.4887 -> 0.5029` and every source is non-regressive; VisA improves only `+0.0134`, below its `+0.03` gate. Selected Dice regresses `0.3722 -> 0.3595` and MAE worsens `0.0857 -> 0.1021`. A cache-hit rerun reproduces model, cache, metrics, and report byte-for-byte in `3,236.3` seconds versus `3,587.5` seconds initially. All `290` tests pass. | Keep default-off. The missing middle between all-component and single-component masks is useful, but pool growth destabilizes ranking and does not fix broad component boundaries. Next target uncertainty-aware within-component contour precision under a bounded candidate budget. |
+| **V4.2f** | Bounded uncertainty-aware within-component contours | ✅ Complete; macro proposal gate passed, primary/deployment gates failed | Added at most three category-free seeded contours per image using fused/posterior mid-rank consensus and disagreement suppression. Across `1,476` images / `32,244` candidates, macro oracle Dice improves `0.4887 -> 0.5020` with no source regression and `15.92%` pool growth. VisA gains only `+0.0018`; selected Dice regresses `0.3722 -> 0.3664`, just beyond the guard. It matches V4.2e oracle within `0.0008` using `22.6%` fewer candidates and lower MAE (`0.0908`). All `292` tests pass. | Keep the bounded proposal primitive and evidence, but leave default-off and retain V4.2d fallback. Fixed contour sweeps do not solve VisA. A continuation must gate candidate admission from category-free uncertainty signals rather than expanding thresholds. |
 | **V4.3** | New locked generalization test | ⬜ Blocked on untouched dataset | Freeze V4 only after leave-dataset-out validation; VisA cannot be reused as locked evidence. | Run one sealed evaluation on a new external benchmark. Keep generation frozen until this gate passes. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly

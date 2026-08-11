@@ -1,0 +1,51 @@
+protocol: v4.2f-bounded-uncertainty-contours
+status: preregistered-before-run
+purpose: improve within-component boundary precision under cross-domain shift without expanding selector thresholds
+design_input:
+  v4_2d_candidate_count: 27816
+  v4_2d_macro_selected_dice: 0.3721590660
+  v4_2d_macro_oracle_dice: 0.4886801905
+  v4_2d_visa_oracle_dice: 0.3582756462
+  v4_2e_result: component unions improved macro oracle but failed VisA and deployment gates
+  diagnosis: broad within-component boundaries remain after component-subset selection
+datasets:
+  - id: mvtec_development
+    role: exposed-development
+  - id: visa_exposed
+    role: exposed-development
+  - id: kodytek_exposed
+    role: exposed-development
+  - id: btad_exposed
+    role: exposed-development
+  - id: ksdd2_exposed
+    role: exposed-development
+proposal_change:
+  relationship_to_v4_2d: strict-superset; V4.2e component unions are disabled
+  family: category-free seeded geodesic contours
+  confidence: geometric mean of fused and posterior within-image mid-ranks
+  uncertainty: source disagreement reduces contour confidence by factor 0.75
+  base_support_quantile: 0.80
+  seed_quantile: 0.95
+  contour_quantiles: [0.75, 0.85, 0.95]
+  maximum_area_fraction: 0.10
+  maximum_candidates_per_image: 3
+  maximum_pool_growth_over_v4_2d: 0.20
+selector:
+  ranking: inherited V4.2d source-calibrated all-pairs list ranker
+  decision_calibration: inherited nested source-jackknife list-score margin
+  threshold_grid: [0.005, 0.01, 0.02, 0.03, 0.05]
+  retuning_rule: no manual threshold, source-specific adjustment, or V4.2e union mixing after results are observed
+firewall:
+  runtime_inputs: fused evidence, calibrated posterior, and source disagreement only
+  official_masks: exposed-development candidate labeling and evaluation only
+  proposal_inputs: no category names, defect names, or reference masks
+primary_endpoint: visa_leave_dataset_out_oracle_dice_gain_over_v4_2d
+proposal_gates:
+  minimum_visa_oracle_dice_gain: 0.03
+  minimum_macro_oracle_dice_gain: 0.01
+  maximum_per_dataset_oracle_dice_regression: 0.0
+  maximum_candidate_pool_growth: 0.20
+deployment_guard:
+  maximum_macro_selected_dice_regression: 0.005
+  maximum_expected_iou_mae: 0.12
+analysis_rule: retain V4.2d deployment fallback unless proposal and deployment gates all pass

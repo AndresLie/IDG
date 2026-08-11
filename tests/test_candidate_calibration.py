@@ -26,6 +26,10 @@ from iadgen_v2.auto_mask.candidate_calibration import (
     train_cross_dataset_candidate_calibrator,
 )
 from iadgen_v2.auto_mask.contracts import PixelPosteriorResult
+from iadgen_v2.auto_mask.uncertainty_contours import (
+    UncertaintyContourContract,
+    generate_uncertainty_contour_candidates,
+)
 from iadgen_v2.config import AppConfig
 
 
@@ -136,6 +140,77 @@ def test_area_calibrated_pool_is_strictly_additive_to_legacy_candidates() -> Non
 
     assert {candidate.mode for candidate in legacy} <= {candidate.mode for candidate in expanded}
     assert any(candidate.mode.startswith("v4_evidence_union_") for candidate in expanded)
+
+
+def test_uncertainty_contours_trim_unstable_component_boundaries() -> None:
+    fused = np.zeros((64, 64), dtype=np.float32)
+    fused[18:46, 18:46] = 0.75
+    fused[27:37, 27:37] = 1.0
+    posterior = np.full_like(fused, 0.05)
+    posterior[18:46, 18:46] = 0.60
+    posterior[27:37, 27:37] = 1.0
+    disagreement = np.zeros_like(fused)
+    disagreement[18:46, 18:46] = 0.95
+    disagreement[27:37, 27:37] = 0.0
+    contract = UncertaintyContourContract(
+        enabled=True,
+        base_support_quantile=0.80,
+        seed_quantile=0.95,
+        contour_quantiles=(0.75, 0.85, 0.95),
+        uncertainty_penalty=0.75,
+        max_area_fraction=0.10,
+        max_candidates_per_image=3,
+    )
+
+    proposals = generate_uncertainty_contour_candidates(
+        fused,
+        disagreement,
+        posterior,
+        contract=contract,
+        min_component_area=4,
+    )
+
+    assert 1 <= len(proposals) <= 3
+    assert all(proposal.mask[31, 31] for proposal in proposals)
+    assert any(not proposal.mask[19, 19] for proposal in proposals)
+    assert all(float(proposal.mask.mean()) <= 0.10 for proposal in proposals)
+
+
+def test_uncertainty_contour_pool_is_bounded_and_strictly_additive() -> None:
+    fused = np.zeros((64, 64), dtype=np.float32)
+    fused[8:24, 8:24] = 0.85
+    fused[13:19, 13:19] = 1.0
+    baseline = fused > 0.90
+    posterior = np.clip(fused + 0.05, 0.0, 1.0)
+    disagreement = np.zeros_like(fused)
+    disagreement[8:24, 8:24] = 0.90
+    disagreement[11:21, 11:21] = 0.40
+    disagreement[13:19, 13:19] = 0.0
+    common = {
+        "baseline_mask": baseline,
+        "fused": fused,
+        "disagreement": disagreement,
+        "posterior_result": PixelPosteriorResult(posterior, baseline, 0.5),
+        "min_component_area": 4,
+        "quantiles": (0.85, 0.95),
+        "max_components": 4,
+    }
+
+    legacy, _ = build_arbitration_candidates(**common)
+    expanded, _ = build_arbitration_candidates(
+        **common,
+        uncertainty_contours=UncertaintyContourContract(
+            enabled=True,
+            contour_quantiles=(0.70, 0.80, 0.90, 0.95),
+            max_candidates_per_image=2,
+        ),
+    )
+    legacy_modes = {candidate.mode for candidate in legacy}
+    expanded_modes = {candidate.mode for candidate in expanded}
+    contour_modes = {mode for mode in expanded_modes if mode.startswith("v4_uncertainty_contour_")}
+
+    assert legacy_modes <= expanded_modes
+    assert 1 <= len(contour_modes) <= 2
 
 
 def test_list_ranking_contract_is_category_free_and_permutation_equivariant() -> None:
@@ -364,6 +439,16 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
                     "max_components": 4,
                     "max_area_fraction": 0.10,
                 },
+                "uncertainty_contours": {
+                    "enabled": True,
+                    "base_support_quantile": 0.80,
+                    "seed_quantile": 0.95,
+                    "contour_quantiles": [0.75, 0.90],
+                    "uncertainty_penalty": 0.75,
+                    "max_area_fraction": 0.10,
+                    "max_candidates_per_image": 2,
+                    "seed_dilation_iterations": 1,
+                },
             }
         },
     )
@@ -395,6 +480,8 @@ def test_cross_dataset_candidate_training_writes_loadable_guarded_bundle(tmp_pat
     assert set(calibrator.bundle["development_datasets"]) == {"dataset_a", "dataset_b"}
     assert calibrator.bundle["selection_strategy"] == "source_calibrated_list_rank"
     assert calibrator.bundle["risk_calibration"] == "source_jackknife_equal_weight"
+    assert calibrator.bundle["uncertainty_contours"]["enabled"]
+    assert calibrator.bundle["uncertainty_contours"]["max_candidates_per_image"] == 2
     assert calibrator.bundle["risk_calibration_effective"] == "source_jackknife_equal_weight"
     assert set(calibrator.bundle["gain_residual_q90_by_source"]) == {"dataset_a", "dataset_b"}
     assert all(source["categories"] == ["part_0", "part_1", "part_2"] for source in manifest["sources"])

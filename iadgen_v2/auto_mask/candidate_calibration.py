@@ -23,6 +23,10 @@ from iadgen_v2.auto_mask.posterior_calibration import (
     ScoreToMaskCalibrator,
     posterior_feature_image,
 )
+from iadgen_v2.auto_mask.uncertainty_contours import (
+    UncertaintyContourContract,
+    generate_uncertainty_contour_candidates,
+)
 from iadgen_v2.config import AppConfig
 from iadgen_v2.records import write_json
 
@@ -226,6 +230,9 @@ class CrossDatasetCandidateCalibrator:
             area_calibration=CandidateAreaCalibrationContract.from_mapping(
                 self.bundle.get("area_calibrated_proposals")
             ),
+            uncertainty_contours=UncertaintyContourContract.from_mapping(
+                self.bundle.get("uncertainty_contours")
+            ),
         )
         prediction_rows = _predict_candidates(self.bundle, candidates)
         baseline = candidates[0]
@@ -254,6 +261,7 @@ def build_arbitration_candidates(
     max_components: int = 4,
     localization_envelope: bool = False,
     area_calibration: CandidateAreaCalibrationContract | None = None,
+    uncertainty_contours: UncertaintyContourContract | None = None,
 ) -> tuple[list[ArbitrationCandidate], tuple[tuple[int, int, int, int], ...]]:
     fused = _probability(fused)
     disagreement = _probability(disagreement)
@@ -296,6 +304,14 @@ def build_arbitration_candidates(
         min_component_area=min_component_area,
     ):
         masks.append((proposal.mode, proposal.mask, proposal.quantile, False, True))
+    for proposal in generate_uncertainty_contour_candidates(
+        fused,
+        disagreement,
+        posterior_result.posterior,
+        contract=uncertainty_contours or UncertaintyContourContract(),
+        min_component_area=min_component_area,
+    ):
+        masks.append((proposal.mode, proposal.mask, proposal.quantile, False, False))
     unique: list[tuple[str, np.ndarray, float, bool, bool]] = []
     seen: set[bytes] = set()
     for mode, mask, quantile, is_posterior, is_component in masks:
@@ -439,6 +455,9 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
     area_calibration = CandidateAreaCalibrationContract.from_mapping(
         settings.get("area_calibrated_proposals")
     )
+    uncertainty_contours = UncertaintyContourContract.from_mapping(
+        settings.get("uncertainty_contours")
+    )
     selection_strategy = str(settings.get("selection_strategy", "baseline_guarded_candidate_gain"))
     if selection_strategy not in CANDIDATE_SELECTION_STRATEGIES:
         raise ValueError(
@@ -464,6 +483,7 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
         min_component_area=min_component_area,
         localization_envelope=localization_envelope,
         area_calibration=area_calibration,
+        uncertainty_contours=uncertainty_contours,
     )
     datasets = sorted({str(row["dataset_id"]) for row in rows})
     if len(datasets) < 2:
@@ -531,6 +551,8 @@ def train_cross_dataset_candidate_calibrator(config: AppConfig) -> Path:
             "leave_dataset_out_summary": overall,
         }
     )
+    if uncertainty_contours.enabled:
+        final_bundle["uncertainty_contours"] = uncertainty_contours.to_dict()
     if minimum_expected_iou_gain is not None:
         final_bundle["minimum_expected_iou_gain"] = minimum_expected_iou_gain
     output_value = settings.get("model_output_path") or (
@@ -651,6 +673,7 @@ def _load_or_build_training_rows(
     min_component_area: int,
     localization_envelope: bool,
     area_calibration: CandidateAreaCalibrationContract,
+    uncertainty_contours: UncertaintyContourContract,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
     if cache_path is None:
         rows, sample_rows = _build_training_rows(
@@ -662,6 +685,7 @@ def _load_or_build_training_rows(
             min_component_area=min_component_area,
             localization_envelope=localization_envelope,
             area_calibration=area_calibration,
+            uncertainty_contours=uncertainty_contours,
         )
         return rows, sample_rows, {"enabled": False, "cache_hit": False}
 
@@ -674,6 +698,7 @@ def _load_or_build_training_rows(
         min_component_area=min_component_area,
         localization_envelope=localization_envelope,
         area_calibration=area_calibration,
+        uncertainty_contours=uncertainty_contours,
     )
     cache_hit = False
     if cache_path.is_file():
@@ -696,6 +721,7 @@ def _load_or_build_training_rows(
                 min_component_area=min_component_area,
                 localization_envelope=localization_envelope,
                 area_calibration=area_calibration,
+                uncertainty_contours=uncertainty_contours,
             )
     else:
         rows, sample_rows = _build_training_rows(
@@ -707,6 +733,7 @@ def _load_or_build_training_rows(
             min_component_area=min_component_area,
             localization_envelope=localization_envelope,
             area_calibration=area_calibration,
+            uncertainty_contours=uncertainty_contours,
         )
 
     if not cache_hit:
@@ -744,6 +771,7 @@ def _candidate_row_cache_fingerprint(
     min_component_area: int,
     localization_envelope: bool,
     area_calibration: CandidateAreaCalibrationContract,
+    uncertainty_contours: UncertaintyContourContract,
 ) -> str:
     contract = {
         "schema_version": CANDIDATE_ROW_CACHE_SCHEMA_VERSION,
@@ -757,6 +785,8 @@ def _candidate_row_cache_fingerprint(
         # Candidate construction is independent of model-training hyperparameters.
         "feature_names": CANDIDATE_FEATURE_NAMES,
     }
+    if uncertainty_contours.enabled:
+        contract["uncertainty_contours"] = uncertainty_contours.to_dict()
     digest = hashlib.sha256(json.dumps(contract, sort_keys=True).encode("utf-8"))
     for source in sorted(sources, key=lambda item: item.dataset_id):
         digest.update(source.dataset_id.encode("utf-8"))
@@ -797,6 +827,7 @@ def _build_training_rows(
     min_component_area: int,
     localization_envelope: bool,
     area_calibration: CandidateAreaCalibrationContract,
+    uncertainty_contours: UncertaintyContourContract,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     rows = []
     sample_rows = []
@@ -829,6 +860,7 @@ def _build_training_rows(
                 max_components=max_components,
                 localization_envelope=localization_envelope,
                 area_calibration=area_calibration,
+                uncertainty_contours=uncertainty_contours,
             )
             region_mask = regions_to_mask(fused.shape, augmented_regions)
             sample_rows.append(
