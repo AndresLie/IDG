@@ -453,5 +453,19 @@
     -0.041392082796879136,
     0.04026631618185204
   ],
-  "r5_passed": false
+  "r5_passed": false,
+  "locked_dice_gain": 0.09520319020918992,
+  "locked_dice_ci": [
+    0.04496122910667837,
+    0.14399095945713083
+  ],
+  "locked_probability_nonpositive": 0.0001,
+  "locked_images": 839,
+  "locked_candidates": 29584,
+  "locked_categories": 10,
+  "locked_macro_dice": 0.3170710182788785,
+  "locked_oracle_dice": 0.5615256110464889,
+  "locked_dice_regret": 0.24547531543536483,
+  "locked_synthetic_dice": 0.22084710540193414,
+  "locked_real_dice": 0.3160502956111241
 }

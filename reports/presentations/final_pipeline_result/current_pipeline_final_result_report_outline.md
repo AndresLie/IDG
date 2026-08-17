@@ -15,17 +15,18 @@ Evidence snapshot: `/home/p76147019/ImgGen/v2/reports/presentations/final_pipeli
 8. Evaluation firewall and scientific integrity
 9. Evidence base
 10. Confirmed selector contribution
-11. V4.2f reproduced headline result
-12. V4.2f result by source
-13. Candidate-quality sprint evolution
-14. V4.2f preregistered gate audit
-15. Visual evidence: MVTec and wood
-16. Locked VisA transfer failure
-17. Synthetic generation result
-18. Independent downstream utility
-19. Contributions and limitations
-20. Recommended paper positioning
-21. Final checkpoint and reproducibility
+11. The sealed test: locked MVTec categories
+12. V4.2f reproduced headline result
+13. V4.2f result by source
+14. Candidate-quality sprint evolution
+15. V4.2f preregistered gate audit
+16. Visual evidence: MVTec and wood
+17. Locked VisA transfer failure
+18. Synthetic generation result
+19. Independent downstream utility
+20. Contributions and limitations
+21. Recommended paper positioning
+22. Final checkpoint and reproducibility
 
 ## Reproduced V4.2f Result
 

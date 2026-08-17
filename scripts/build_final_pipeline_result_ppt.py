@@ -58,6 +58,8 @@ R5_RESULT = (
     / "utility_review"
     / "r5_synthetic_utility_review.json"
 )
+LOCKED_POOL = ROOT / "reports" / "r3_locked_confirmation" / "locked_candidate_pool_analysis.json"
+R6_PACKAGE = ROOT / "reports" / "r6_evidence_package" / "r6_evidence_package.json"
 
 SOURCE_LABELS = {
     "btad_exposed": "BTAD",
@@ -116,6 +118,17 @@ class ProjectEvidence:
     r5_pixel_ap_gain: float
     r5_pixel_ap_ci: tuple[float, float]
     r5_passed: bool
+    locked_dice_gain: float
+    locked_dice_ci: tuple[float, float]
+    locked_probability_nonpositive: float
+    locked_images: int
+    locked_candidates: int
+    locked_categories: int
+    locked_macro_dice: float
+    locked_oracle_dice: float
+    locked_dice_regret: float
+    locked_synthetic_dice: float
+    locked_real_dice: float
 
 
 def main() -> None:
@@ -138,6 +151,7 @@ def main() -> None:
     add_governance_slide(prs)
     add_dataset_slide(prs)
     add_selector_contribution_slide(prs, evidence)
+    add_locked_confirmation_slide(prs, evidence)
     add_v42f_headline_slide(prs, evidence)
     add_source_results_slide(prs, evidence)
     add_candidate_evolution_slide(prs, evidence)
@@ -154,7 +168,7 @@ def main() -> None:
     prs.save(PPTX_PATH)
     write_outline(evidence)
     DATA_PATH.write_text(json.dumps(asdict(evidence), indent=2) + "\n", encoding="utf-8")
-    validate_presentation(PPTX_PATH, expected_slides=21)
+    validate_presentation(PPTX_PATH, expected_slides=22)
     print(PPTX_PATH)
     print(OUTLINE_PATH)
     print(DATA_PATH)
@@ -184,6 +198,9 @@ def load_evidence() -> ProjectEvidence:
     visa = load_json(VISA_FAILURE)
     r4 = load_json(R4_RESULT)
     r5 = load_json(R5_RESULT)
+    locked = load_json(LOCKED_POOL)
+    locked_summary = load_json(R6_PACKAGE)["locked_summary"]
+    locked_boot = locked["primary_paired_bootstrap"]
     selector_delta = selector["regret_delta_syn_minus_real"]
     visibility = r4["paired_intervals"]["critic_defect_visibility_score"]
     pixel_ap = r5["intervals"]["pixel_ap"]
@@ -207,6 +224,17 @@ def load_evidence() -> ProjectEvidence:
         r5_pixel_ap_gain=float(pixel_ap["mean_delta"]),
         r5_pixel_ap_ci=(float(pixel_ap["ci95_low"]), float(pixel_ap["ci95_high"])),
         r5_passed=bool(r5["gate"]["passed"]),
+        locked_dice_gain=float(locked_boot["mean"]),
+        locked_dice_ci=tuple(float(value) for value in locked_boot["ci95"]),
+        locked_probability_nonpositive=float(locked_boot["probability_nonpositive"]),
+        locked_images=int(locked["pool"]["images"]),
+        locked_candidates=int(locked["pool"]["candidates"]),
+        locked_categories=int(locked_summary["categories"]),
+        locked_macro_dice=float(locked_summary["dice"]),
+        locked_oracle_dice=float(locked_summary["oracle_dice"]),
+        locked_dice_regret=float(locked_summary["dice_regret"]),
+        locked_synthetic_dice=float(locked["aggregates"]["synthetic_baseline"]["category_macro"]["selected_dice"]),
+        locked_real_dice=float(locked["aggregates"]["real_candidate_widened"]["category_macro"]["selected_dice"]),
     )
 
 
@@ -314,7 +342,9 @@ def blank_slide(prs: Presentation, title: str, section: str) -> object:
     slide.background.fill.solid()
     slide.background.fill.fore_color.rgb = LIGHT
     base.add_rect(slide, 0, 0, 13.333, 0.12, NAVY, line=None)
-    base.add_text(slide, 0.55, 0.27, 10.8, 0.48, title, 25, NAVY, bold=True)
+    # Title box stops short of the section tag so a long title can never wrap
+    # into it or grow down into the content band.
+    base.add_text(slide, 0.55, 0.27, 9.95, 0.48, title, 25, NAVY, bold=True)
     base.add_text(slide, 10.75, 0.32, 1.95, 0.25, section.upper(), 8.5, TEAL_DARK, bold=True, align=PP_ALIGN.RIGHT)
     add_footer(slide, len(prs.slides))
     return slide
@@ -346,7 +376,7 @@ def add_executive_slide(prs: Presentation, evidence: ProjectEvidence) -> None:
     base.add_text(slide, 0.75, 0.95, 11.8, 0.65, "The research implementation is complete. Further tuning on the same exposed data is unlikely to strengthen the paper.", 20, NAVY, bold=True, align=PP_ALIGN.CENTER)
     run = run_by_name(evidence, "V4.2f")
     cards = [
-        (f"{run.oracle_dice:.3f}", "macro oracle Dice", "+0.013 vs V4.2d", GREEN),
+        (f"{evidence.locked_dice_gain:+.3f}", "locked selector Dice gain", "confirmed on unseen categories", TEAL),
         (f"{run.selected_dice:.3f}", "macro selected Dice", "-0.006 vs V4.2d", RED),
         (f"{evidence.visa_macro_dice:.3f}", "locked VisA Dice", "generalization gate failed", RED),
         (f"{evidence.r5_pixel_ap_gain:+.3f}", "synthetic pixel-AP delta", "95% CI crosses zero", ORANGE),
@@ -501,15 +531,43 @@ def add_dataset_slide(prs: Presentation) -> None:
 
 def add_selector_contribution_slide(prs: Presentation, evidence: ProjectEvidence) -> None:
     slide = blank_slide(prs, "Confirmed contribution: real-candidate selector calibration", "Results")
-    lo, hi = evidence.selector_regret_ci
-    base.add_metric_card(slide, 0.72, 1.04, 3.48, 1.55, f"{evidence.selector_regret_gain:+.3f}", "regret reduction vs synthetic selector", f"95% CI [{lo:+.3f}, {hi:+.3f}]", TEAL)
-    base.add_callout(slide, 4.62, 1.04, 3.75, 1.55, "Matched candidate pool", "The comparison changes the selector, not proposal availability. Candidate-pool hashes are identical within each arm.", PURPLE)
-    base.add_callout(slide, 8.78, 1.04, 3.75, 1.55, "Leave-category-out", "Each development category is predicted by calibration trained without that category.", GREEN)
-    base.add_text(slide, 0.82, 3.10, 5.55, 0.34, "Mean selection regret", 16, NAVY, bold=True)
-    add_simple_bars(slide, 0.82, 3.55, 5.55, 2.00, ["Synthetic calibration", "Real LCO calibration"], [0.3515, 0.1571], [RED, TEAL], maximum=0.40)
-    base.add_text(slide, 6.82, 3.10, 5.55, 0.34, "Mean selected Dice", 16, NAVY, bold=True)
-    add_simple_bars(slide, 6.82, 3.55, 5.55, 2.00, ["Synthetic calibration", "Real LCO calibration"], [0.2248, 0.4692], [RED, TEAL], maximum=0.55)
-    base.add_text(slide, 0.9, 6.24, 11.5, 0.42, "This is the paper's strongest positive quantitative claim. It should lead the contribution list.", 14, TEAL_DARK, bold=True, align=PP_ALIGN.CENTER)
+    base.add_text(slide, 0.75, 0.92, 11.8, 0.5, "Train the selector on real labelled candidates instead of synthetic corruptions. Confirmed twice.", 18, NAVY, bold=True, align=PP_ALIGN.CENTER)
+    dev_lo, dev_hi = evidence.selector_regret_ci
+    lock_lo, lock_hi = evidence.locked_dice_ci
+    base.add_metric_card(
+        slide, 0.72, 1.60, 3.60, 1.55,
+        f"{evidence.locked_dice_gain:+.3f}",
+        f"locked Dice gain, {evidence.locked_categories} unseen categories",
+        f"95% CI [{lock_lo:+.3f}, {lock_hi:+.3f}] - the decisive test",
+        TEAL,
+    )
+    base.add_metric_card(
+        slide, 4.52, 1.60, 3.60, 1.55,
+        f"{evidence.selector_regret_gain:+.3f}",
+        "development regret reduction, 5 categories",
+        f"95% CI [{dev_lo:+.3f}, {dev_hi:+.3f}]",
+        GREEN,
+    )
+    base.add_callout(slide, 8.32, 1.60, 4.20, 1.55, "Same candidates, different selector", "Each arm is scored on an identical, hash-verified candidate pool, and every category is predicted by calibration trained without it.", PURPLE)
+    base.add_text(slide, 0.82, 3.48, 5.55, 0.34, "Development mean selection regret", 15, NAVY, bold=True)
+    add_simple_bars(slide, 0.82, 3.92, 5.55, 1.90, ["Synthetic calibration", "Real calibration"], [0.3515, 0.1571], [RED, TEAL], maximum=0.40)
+    base.add_text(slide, 6.82, 3.48, 5.55, 0.34, "Development mean selected Dice", 15, NAVY, bold=True)
+    add_simple_bars(slide, 6.82, 3.92, 5.55, 1.90, ["Synthetic calibration", "Real calibration"], [0.2248, 0.4692], [RED, TEAL], maximum=0.55)
+    base.add_text(slide, 0.9, 6.28, 11.5, 0.42, "The locked result is the load-bearing one: it holds on categories never used during development.", 14, TEAL_DARK, bold=True, align=PP_ALIGN.CENTER)
+
+
+def add_locked_confirmation_slide(prs: Presentation, evidence: ProjectEvidence) -> None:
+    slide = blank_slide(prs, "The sealed test: locked MVTec categories", "Generalization")
+    base.add_text(slide, 0.75, 0.92, 11.8, 0.5, f"{evidence.locked_categories} categories were never touched during development. Official masks opened once, after outputs were sealed.", 18, NAVY, bold=True, align=PP_ALIGN.CENTER)
+    lo, hi = evidence.locked_dice_ci
+    base.add_metric_card(slide, 0.72, 1.60, 3.60, 1.55, f"{evidence.locked_dice_gain:+.3f}", "selector Dice gain on unseen categories", f"95% CI [{lo:+.3f}, {hi:+.3f}], P(<=0) = {evidence.locked_probability_nonpositive:g}", TEAL)
+    base.add_metric_card(slide, 4.52, 1.60, 3.60, 1.55, f"{evidence.locked_macro_dice:.3f}", "locked macro Dice", "below the 0.55 release target", RED)
+    base.add_metric_card(slide, 8.32, 1.60, 4.20, 1.55, f"{evidence.locked_oracle_dice:.3f}", "candidate oracle Dice", f"selection leaves {evidence.locked_dice_regret:.3f} Dice unused", ORANGE)
+    base.add_text(slide, 0.82, 3.48, 5.55, 0.34, "Locked selected Dice by selector", 15, NAVY, bold=True)
+    add_simple_bars(slide, 0.82, 3.92, 5.55, 1.90, ["Synthetic calibration", "Real calibration"], [evidence.locked_synthetic_dice, evidence.locked_real_dice], [RED, TEAL], maximum=0.40)
+    base.add_callout(slide, 6.82, 3.44, 5.70, 1.10, "What it confirms", "The selector contribution transfers to categories it never saw. This is the paper's primary claim.", TEAL)
+    base.add_callout(slide, 6.82, 4.72, 5.70, 1.10, "What it rejects", "The full mask architecture is not release-ready, and selection still leaves most of the ceiling unused.", RED)
+    base.add_text(slide, 0.9, 6.28, 11.5, 0.42, f"{evidence.locked_images} images, {evidence.locked_candidates:,} sealed candidates, one-shot evaluation - re-running it is forbidden by the sealed configuration.", 12, MUTED, align=PP_ALIGN.CENTER)
 
 
 def add_v42f_headline_slide(prs: Presentation, evidence: ProjectEvidence) -> None:
@@ -523,7 +581,7 @@ def add_v42f_headline_slide(prs: Presentation, evidence: ProjectEvidence) -> Non
     ]
     for index, card in enumerate(cards):
         base.add_metric_card(slide, 0.72 + index * 4.08, 1.08, 3.68, 1.55, *card)
-    base.add_text(slide, 0.82, 3.10, 11.6, 0.34, "Bounded disagreement-aware contours improve the candidate ceiling, but the selector cannot convert that ceiling into reliable utility.", 16, NAVY, bold=True, align=PP_ALIGN.CENTER)
+    base.add_text(slide, 0.82, 3.06, 11.6, 0.34, f"Better candidates, no better output: even a perfect ranker on this pool would add only {f.oracle_dice - f.selected_dice:+.3f} macro Dice.", 16, NAVY, bold=True, align=PP_ALIGN.CENTER)
     base.add_callout(slide, 0.82, 3.76, 3.56, 1.58, "Proposal result", "All five source oracles are non-regressive. New contours become strict oracle winners on 125 images.", GREEN)
     base.add_callout(slide, 4.88, 3.76, 3.56, 1.58, "Selection result", "Only 12 new contours are selected. Kodytek falls back to its weaker baseline after refitting.", RED)
     base.add_callout(slide, 8.94, 3.76, 3.56, 1.58, "Decision", "Keep the mechanism as research infrastructure, leave it default-off, and preserve V4.2d fallback.", ORANGE)
@@ -599,13 +657,14 @@ def add_visa_visual_slide(prs: Presentation, evidence: ProjectEvidence, assets: 
     base.add_picture_contain(slide, assets["visa"], 0.68, 1.12, 7.30, 5.35)
     lo, hi = evidence.visa_macro_ci
     base.add_metric_card(slide, 8.45, 1.10, 4.02, 1.55, f"{evidence.visa_macro_dice:.3f}", "macro Dice", f"95% CI [{lo:.3f}, {hi:.3f}]", RED)
-    base.add_metric_card(slide, 8.45, 2.98, 4.02, 1.55, f"{evidence.visa_search_recall:.3f}", "search-region recall", "localization also transfers weakly", ORANGE)
+    base.add_metric_card(slide, 8.45, 2.98, 4.02, 1.55, f"{evidence.visa_search_recall:.3f}", "search-region recall (frozen runtime)", "localization also transfers weakly", ORANGE)
     base.add_metric_card(slide, 8.45, 4.86, 4.02, 1.55, f"{evidence.visa_accepted_coverage:.3f}", "accepted coverage", "quality confidence is miscalibrated", PURPLE)
-    base.add_text(slide, 0.88, 6.66, 11.65, 0.24, "High recall often comes with broad masks; only chewing-gum exceeds 0.30 category Dice.", 10.5, RED, bold=True, align=PP_ALIGN.CENTER)
+    base.add_text(slide, 0.88, 6.62, 11.65, 0.24, "High recall often comes with broad masks; only chewing-gum exceeds 0.30 category Dice.", 10.5, RED, bold=True, align=PP_ALIGN.CENTER)
+    base.add_text(slide, 0.88, 6.86, 11.65, 0.22, "This is the frozen runtime region. The later V4 slides rebuild a wider evidence envelope, so their recall figures are not comparable.", 8.5, MUTED, italic=True, align=PP_ALIGN.CENTER)
 
 
 def add_generation_slide(prs: Presentation, evidence: ProjectEvidence, assets: dict[str, Path]) -> None:
-    slide = blank_slide(prs, "Synthetic generation: visible improvement, incomplete validation", "Generation")
+    slide = blank_slide(prs, "Synthetic generation: visible, not yet validated", "Generation")
     base.add_rect(slide, 0.55, 1.00, 7.45, 5.62, WHITE, line=RGBColor(203, 213, 225), radius=True)
     base.add_picture_contain(slide, assets["generation"], 0.68, 1.14, 7.18, 5.32)
     lo, hi = evidence.r4_visibility_ci
@@ -621,12 +680,13 @@ def add_downstream_slide(prs: Presentation, evidence: ProjectEvidence, assets: d
     base.add_picture_contain(slide, assets["prediction"], 0.92, 1.25, 3.90, 5.10)
     lo, hi = evidence.r5_pixel_ap_ci
     base.add_metric_card(slide, 5.45, 1.15, 3.25, 1.55, f"{evidence.r5_pixel_ap_gain:+.4f}", "pixel-AP delta", f"95% CI [{lo:+.4f}, {hi:+.4f}]", RED)
-    base.add_metric_card(slide, 9.10, 1.15, 3.25, 1.55, "5", "paired training seeds", "strict deterministic execution", TEAL)
+    base.add_metric_card(slide, 9.10, 1.15, 3.25, 1.55, "5", "paired training seeds", "byte-identical replay verified", TEAL)
     base.add_callout(slide, 5.45, 3.15, 3.25, 1.55, "Fair comparison", "Same ResNet18 U-Net, matched optimizer steps, paired seeds, and no PatchCore fusion.", GREEN)
     base.add_callout(slide, 9.10, 3.15, 3.25, 1.55, "Promotion gate", "Failed: the mean gain is below +0.02 and the bootstrap interval includes zero.", RED)
     base.add_rect(slide, 5.45, 5.18, 6.90, 0.90, PALE, line=RGBColor(203, 213, 225), radius=True)
     base.add_text(slide, 5.72, 5.42, 6.35, 0.38, "Conclusion: synthetic generation is optional augmentation, not a proven detector improvement.", 13, NAVY, bold=True, align=PP_ALIGN.CENTER)
-    base.add_text(slide, 5.45, 6.38, 6.9, 0.28, f"Gate passed: {evidence.r5_passed}", 10.5, MUTED, align=PP_ALIGN.CENTER)
+    base.add_text(slide, 5.45, 6.34, 6.9, 0.26, "A nondeterministic-training defect was found mid-study, fixed, and the null re-measured; the decision held.", 9, MUTED, italic=True, align=PP_ALIGN.CENTER)
+    base.add_text(slide, 5.45, 6.60, 6.9, 0.24, f"Gate passed: {evidence.r5_passed}", 10, MUTED, align=PP_ALIGN.CENTER)
 
 
 def add_contribution_limitations_slide(prs: Presentation) -> None:
@@ -787,6 +847,7 @@ def write_outline(evidence: ProjectEvidence) -> None:
         "Evaluation firewall and scientific integrity",
         "Evidence base",
         "Confirmed selector contribution",
+        "The sealed test: locked MVTec categories",
         "V4.2f reproduced headline result",
         "V4.2f result by source",
         "Candidate-quality sprint evolution",
