@@ -935,6 +935,87 @@ retain V4.2d as fallback. Any continuation should allocate contours only when a
 category-free admission model detects localized boundary uncertainty, and must
 be preregistered as a new study.
 
+## 1g. Operating-point diagnosis and the pseudo-label student (2026-08-11)
+
+Two questions were tested after the V4.2f freeze: is the low binary Dice a
+*representation* failure or an *operating-point* failure, and can a segmentation
+student trained on our pseudo-labels beat those labels?
+
+### The candidate quantile family is truncated
+
+Threshold sweep on retained VisA fused-evidence maps (96 images, 8 per category,
+evaluation-only; no regeneration):
+
+| Threshold | Mean Dice |
+| --- | ---: |
+| p85 | `0.060` |
+| p90 | `0.071` |
+| p95 | `0.105` |
+| p97.5 — current family maximum | `0.143` |
+| p99 | `0.175` |
+| p99.5 | `0.183` |
+| p99.75 | `0.165` |
+
+Dice is still rising steeply where `candidate_quantiles` stops. Consequences:
+
+- a **single fixed p99.5 threshold with no selector** reaches `0.183` against the
+  deployed pipeline's `0.153`;
+- a per-image oracle threshold on the *same* map reaches `0.264`;
+- predicted mask area averages **6.8x** the reference area, while median VisA
+  reference area is `0.23%` of the image.
+
+This reframes the SOTA comparison. Published few-shot detectors report
+threshold-free pixel AUROC (`0.976-0.982`); the locked MVTec runtime already
+reaches `0.9481` pixel AUROC and `0.8548` AUPRO with `0.3171` Dice. The binary
+mask, not the evidence field, is the weak product. Locked VisA macaroni1 is the
+clearest case: Dice `0.0271` with AUPRO `0.8742`, recall `0.7811`, precision
+`0.0140`.
+
+Sprint **V4.2g** tests the fix (`research_protocols/v4_2g_extended_quantiles.yaml`,
+sealed before execution; `candidate_quantiles` extended to `0.99, 0.995, 0.999`).
+
+### The cost of automatic localization is measured
+
+Same evidence map and thresholding, 120 VisA images, only the search region
+differs:
+
+| Localization | Best-threshold Dice |
+| --- | ---: |
+| Automatic Qwen region | `0.147` |
+| Oracle bounding box | `0.306` |
+
+Automatic localization achieves **48%** of the box-supervised result, and the
+failure is bimodal: on the 64 images with search recall `>= 0.9` it reaches
+`0.250` against `0.349`, but on the 49 images with search recall `< 0.5` it
+collapses to `0.011` against `0.248`. Roughly **41% of VisA images are
+unrecoverable localization failures**, which no selection or thresholding change
+can repair. This ratio is worth reporting directly: methods that consume a
+bounding box never pay it.
+
+### A pseudo-label student does not denoise (negative)
+
+Hypothesis: training a segmentation model on our pseudo-masks yields a cleaner
+mask than the labels themselves, as box-supervised pipelines obtain from noisy
+SAM masks. Protocol: ResNet18-encoder U-Net, pseudo-labels as the **only**
+training signal, official masks used solely to score held-out samples,
+deterministic execution, 300 steps, 256 px, three seeds
+(`scripts/evaluate_pseudo_label_student.py`).
+
+| Split | Pseudo-label Dice | Student Dice | Delta | 95% CI |
+| --- | ---: | ---: | ---: | --- |
+| Leave-category-out (unseen category) | `0.6075` | `0.2122` | `-0.3953` | `[-0.5199, -0.2543]` |
+| Stratified image folds (in-distribution) | `0.5890` | `0.4519` | `-0.1371` | `[-0.1898, -0.0843]` |
+
+Both are negative and both intervals exclude zero. The student is worse than the
+labels it trained on even in-distribution, and collapses entirely on unseen
+categories. **The published mask should remain the pseudo-label.**
+
+Scope limit, stated plainly: this used 144 development images, 72 per training
+fold, 300 steps at 256 px. That is a small budget, so it refutes
+"train a student on the development pool" and not the denoising idea at
+publication scale. Revisit only with a substantially larger pseudo-label corpus,
+and predeclare the gate.
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.
@@ -1180,6 +1261,7 @@ post-confirmation ablations, not automatic implementation tasks.
 | **V4.2e** | Cross-domain area-calibrated additive candidates | ✅ Complete; proposal gate partially passed, deployment failed | Added a strict-superset category-free pool of evidence-ranked component unions and seeded support masks, plus content-fingerprinted candidate-row caching. Across `1,476` images / `41,638` candidates, macro oracle Dice improves `0.4887 -> 0.5029` and every source is non-regressive; VisA improves only `+0.0134`, below its `+0.03` gate. Selected Dice regresses `0.3722 -> 0.3595` and MAE worsens `0.0857 -> 0.1021`. A cache-hit rerun reproduces model, cache, metrics, and report byte-for-byte in `3,236.3` seconds versus `3,587.5` seconds initially. All `290` tests pass. | Keep default-off. The missing middle between all-component and single-component masks is useful, but pool growth destabilizes ranking and does not fix broad component boundaries. Next target uncertainty-aware within-component contour precision under a bounded candidate budget. |
 | **V4.2f** | Bounded uncertainty-aware within-component contours | ✅ Complete; macro proposal gate passed, primary/deployment gates failed | Added at most three category-free seeded contours per image using fused/posterior mid-rank consensus and disagreement suppression. Across `1,476` images / `32,244` candidates, macro oracle Dice improves `0.4887 -> 0.5020` with no source regression and `15.92%` pool growth. VisA gains only `+0.0018`; selected Dice regresses `0.3722 -> 0.3664`, just beyond the guard. It matches V4.2e oracle within `0.0008` using `22.6%` fewer candidates and lower MAE (`0.0908`). A cache-hit rerun reproduces all output and provenance hashes exactly in `2,072.8` seconds. All `292` tests pass. | Keep the bounded proposal primitive and evidence, but leave default-off and retain V4.2d fallback. Fixed contour sweeps do not solve VisA. The architecture is frozen; no additional same-data candidate tuning is recommended. |
 | **V4.3** | New locked generalization test | ⬜ Blocked on untouched dataset | Freeze V4 only after leave-dataset-out validation; VisA cannot be reused as locked evidence. | Run one sealed evaluation on a new external benchmark. Keep generation frozen until this gate passes. |
+| **Maintenance** | Repository artifact retention | ✅ Complete | Removed `2.03 GB` of reproducible smoke runs, rejected edge/PCA ablation outputs, temporary rerun snapshots, and interpreter caches. Preserved all canonical R1-R6/V4 evidence, isolated datasets, model caches, the active environment, and in-progress V4.2g/student runs. R6 hashes pass and all `292` tests pass. | Retain locked evidence and offline dependencies; future cleanup may remove only explicitly classified disposable artifacts. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly
 

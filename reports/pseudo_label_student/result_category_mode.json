@@ -1,0 +1,75 @@
+{
+  "protocol": "train on pseudo-labels only; official masks used solely to score held-out categories",
+  "steps": 300,
+  "image_size": 256,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "leave_category_out": {
+    "bottle": {
+      "images": 18,
+      "pseudo_label_dice": 0.5295,
+      "student_dice": 0.2245,
+      "delta": -0.3049,
+      "per_seed_student_dice": [
+        0.2264,
+        0.2012,
+        0.2459
+      ]
+    },
+    "metal_nut": {
+      "images": 24,
+      "pseudo_label_dice": 0.7106,
+      "student_dice": 0.2619,
+      "delta": -0.4487,
+      "per_seed_student_dice": [
+        0.2456,
+        0.2737,
+        0.2663
+      ]
+    },
+    "tile": {
+      "images": 30,
+      "pseudo_label_dice": 0.7741,
+      "student_dice": 0.1564,
+      "delta": -0.6177,
+      "per_seed_student_dice": [
+        0.1462,
+        0.1423,
+        0.1806
+      ]
+    },
+    "wood": {
+      "images": 30,
+      "pseudo_label_dice": 0.6653,
+      "student_dice": 0.2237,
+      "delta": -0.4416,
+      "per_seed_student_dice": [
+        0.1217,
+        0.4096,
+        0.1398
+      ]
+    },
+    "zipper": {
+      "images": 42,
+      "pseudo_label_dice": 0.3581,
+      "student_dice": 0.1947,
+      "delta": -0.1634,
+      "per_seed_student_dice": [
+        0.2824,
+        0.22,
+        0.0817
+      ]
+    }
+  },
+  "macro_pseudo_label_dice": 0.6075,
+  "macro_student_dice": 0.2122,
+  "macro_delta": -0.3953,
+  "macro_delta_ci95": [
+    -0.5199,
+    -0.2543
+  ],
+  "student_denoises": false
+}

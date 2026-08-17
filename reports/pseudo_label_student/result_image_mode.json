@@ -1,0 +1,44 @@
+{
+  "protocol": "train on pseudo-labels only; official masks used solely to score held-out samples",
+  "mode": "image",
+  "mode_meaning": "in-distribution label denoising (Boxes2Pixels analogue)",
+  "steps": 300,
+  "image_size": 256,
+  "seeds": [
+    0,
+    1,
+    2
+  ],
+  "leave_category_out": {
+    "fold_a": {
+      "images": 72,
+      "pseudo_label_dice": 0.6108,
+      "student_dice": 0.421,
+      "delta": -0.1898,
+      "per_seed_student_dice": [
+        0.4075,
+        0.4332,
+        0.4223
+      ]
+    },
+    "fold_b": {
+      "images": 72,
+      "pseudo_label_dice": 0.5671,
+      "student_dice": 0.4828,
+      "delta": -0.0843,
+      "per_seed_student_dice": [
+        0.5123,
+        0.495,
+        0.441
+      ]
+    }
+  },
+  "macro_pseudo_label_dice": 0.589,
+  "macro_student_dice": 0.4519,
+  "macro_delta": -0.1371,
+  "macro_delta_ci95": [
+    -0.1898,
+    -0.0843
+  ],
+  "student_denoises": false
+}
