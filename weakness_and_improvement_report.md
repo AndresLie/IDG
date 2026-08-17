@@ -1016,6 +1016,71 @@ fold, 300 steps at 256 px. That is a small budget, so it refutes
 publication scale. Revisit only with a substantially larger pseudo-label corpus,
 and predeclare the gate.
 
+## 1h. V4.2g extended quantiles — hypothesis confirmed, promotion failed (2026-08-11)
+
+Executed against the sealed protocol
+`research_protocols/v4_2g_extended_quantiles.yaml`. Only `candidate_quantiles`
+changed, from `[0.85, 0.90, 0.95, 0.975]` to
+`[0.85, 0.90, 0.95, 0.975, 0.99, 0.995, 0.999]`. Everything else — evidence,
+fusion, selector, features, folds — is identical to V4.2f.
+
+| Source | Oracle V4.2f | Oracle V4.2g | Δ oracle | Selected V4.2f | Selected V4.2g | Δ selected |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| btad_exposed | `0.3488` | `0.3575` | `+0.0087` | `0.2344` | `0.2195` | `-0.0148` |
+| kodytek_exposed | `0.5139` | `0.5139` | `+0.0000` | `0.3164` | `0.3164` | `+0.0000` |
+| ksdd2_exposed | `0.6297` | `0.6501` | `+0.0205` | `0.5274` | `0.5274` | `+0.0000` |
+| mvtec_development | `0.6576` | `0.6584` | `+0.0008` | `0.5948` | `0.5948` | `+0.0000` |
+| **visa_exposed** | `0.3601` | **`0.4206`** | **`+0.0605`** | `0.1593` | `0.1593` | `+0.0000` |
+| **Dataset macro** | `0.5020` | `0.5201` | `+0.0181` | `0.3664` | `0.3635` | `-0.0030` |
+
+Candidates `32,244 -> 44,091` (`+36.7%`), below the predeclared `100%` cap.
+
+### Gate audit against the sealed preregistration
+
+```text
+per-source oracle non-regression   <= 0 regression   PASS (all five non-regressive)
+dataset-macro oracle gain          >= +0.0100        PASS (+0.0181)
+VisA oracle gain                   >= +0.0300        PASS (+0.0605)
+selected-Dice regression           <= 0.0050         PASS (0.0030)
+candidate-pool growth              <= 100%           PASS (+36.7%)
+PROMOTION utility gain             >= +0.0100        FAIL (-0.0030)
+```
+
+The run's own gate block additionally records `decision_calibration` false,
+`expected_iou_spearman` false (`0.5988`; the tighter candidates are harder to
+rank in absolute IoU), and `search_region_recall` false (`0.8959` macro, BTAD
+`0.6315`, untouched by this change).
+
+### Interpretation — the decomposition is now proven
+
+The proposal hypothesis is **confirmed and the VisA oracle gate that failed in
+V4.2f at `+0.0018` now passes at `+0.0605`**, the largest single-source oracle
+gain recorded in this project. The truncated quantile family was a real
+architectural cap, exactly as the p97.5/p99.5 sweep predicted.
+
+The selector converts **none** of it. VisA, KSDD2, Kodytek and MVTec selected Dice
+are bit-identical to V4.2f: the decision policy fails closed rather than acting on
+candidates it cannot validate, so the entire gain is stranded. Remaining
+oracle-minus-selected headroom is macro `0.1566` and **VisA `0.2613`**.
+
+This is the fifth consecutive preregistered non-promotion, and the most
+informative one, because it cleanly separates the two failure modes:
+
+```text
+candidate generation  - was the binding cap, is now fixed (VisA oracle +0.0605)
+candidate selection   - converts nothing under domain shift (4/5 sources: zero overrides)
+```
+
+**Consequence for the roadmap.** Do not run a sixth selection sprint. The
+correct-quality masks now provably exist in the pool (VisA oracle `0.4206` against
+a published `0.1593`), and a *fixed* p99.5 threshold with no selector at all
+already beat the deployed pipeline on VisA (`0.183` vs `0.153`, §1g). The
+indicated change is to take the learned selector **off the critical path for the
+segmentation/detection claim** — publish a dense, area-calibrated thresholded map
+— and keep the selector and the Qwen region for the generation half, where a
+single region is genuinely required. Area ratio remains macro `2.639` and VisA
+`5.247` precisely because the tighter candidates exist but are never selected.
+
 ## 2. Confirmed strengths (protect these)
 
 - Qwen used as a search aid, not a pixel oracle.
@@ -1261,7 +1326,7 @@ post-confirmation ablations, not automatic implementation tasks.
 | **V4.2e** | Cross-domain area-calibrated additive candidates | ✅ Complete; proposal gate partially passed, deployment failed | Added a strict-superset category-free pool of evidence-ranked component unions and seeded support masks, plus content-fingerprinted candidate-row caching. Across `1,476` images / `41,638` candidates, macro oracle Dice improves `0.4887 -> 0.5029` and every source is non-regressive; VisA improves only `+0.0134`, below its `+0.03` gate. Selected Dice regresses `0.3722 -> 0.3595` and MAE worsens `0.0857 -> 0.1021`. A cache-hit rerun reproduces model, cache, metrics, and report byte-for-byte in `3,236.3` seconds versus `3,587.5` seconds initially. All `290` tests pass. | Keep default-off. The missing middle between all-component and single-component masks is useful, but pool growth destabilizes ranking and does not fix broad component boundaries. Next target uncertainty-aware within-component contour precision under a bounded candidate budget. |
 | **V4.2f** | Bounded uncertainty-aware within-component contours | ✅ Complete; macro proposal gate passed, primary/deployment gates failed | Added at most three category-free seeded contours per image using fused/posterior mid-rank consensus and disagreement suppression. Across `1,476` images / `32,244` candidates, macro oracle Dice improves `0.4887 -> 0.5020` with no source regression and `15.92%` pool growth. VisA gains only `+0.0018`; selected Dice regresses `0.3722 -> 0.3664`, just beyond the guard. It matches V4.2e oracle within `0.0008` using `22.6%` fewer candidates and lower MAE (`0.0908`). A cache-hit rerun reproduces all output and provenance hashes exactly in `2,072.8` seconds. All `292` tests pass. | Keep the bounded proposal primitive and evidence, but leave default-off and retain V4.2d fallback. Fixed contour sweeps do not solve VisA. The architecture is frozen; no additional same-data candidate tuning is recommended. |
 | **V4.3** | New locked generalization test | ⬜ Blocked on untouched dataset | Freeze V4 only after leave-dataset-out validation; VisA cannot be reused as locked evidence. | Run one sealed evaluation on a new external benchmark. Keep generation frozen until this gate passes. |
-| **Maintenance** | Repository artifact retention | ✅ Complete | Removed `2.03 GB` of reproducible smoke runs, rejected edge/PCA ablation outputs, temporary rerun snapshots, and interpreter caches. Preserved all canonical R1-R6/V4 evidence, isolated datasets, model caches, the active environment, and in-progress V4.2g/student runs. R6 hashes pass and all `292` tests pass. | Retain locked evidence and offline dependencies; future cleanup may remove only explicitly classified disposable artifacts. |
+| **Maintenance** | Repository artifact retention | ✅ Complete | Removed `12.10 GB` across two audited passes: reproducible smoke runs, rejected edge/PCA raw outputs, legacy pilot runs, temporary rerun snapshots, interpreter caches, and derived DINO/residual evidence caches. Preserved final reports, locked run masks/metadata, canonical R1-R6/V4 calibration inputs, isolated datasets, model snapshots, the active environment, and the in-progress V4.2g run. R6 hashes pass and all `292` tests pass. | Retain locked evidence and offline dependencies; future cleanup may remove only explicitly classified disposable artifacts. |
 
 ### 5.4 Sprint R0 — close the PCA probe correctly
 
